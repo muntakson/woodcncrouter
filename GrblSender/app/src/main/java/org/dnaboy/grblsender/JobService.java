@@ -27,6 +27,8 @@ public class JobService extends Service {
     private static final int ID_DONE = 2;
     private static final int ID_PAUSE = 3;
     private static final String CHANNEL_PAUSE = "pause";
+    private static final String CHANNEL_UPDATE = "update";
+    private static final int ID_UPDATE = 4;
     private static final String EXTRA_TITLE = "title";
 
     private static long lastUpdateMs;
@@ -70,6 +72,21 @@ public class JobService extends Service {
 
     static void clearPauseAlert(Context ctx) {
         notifyManager(ctx).cancel(ID_PAUSE);
+    }
+
+    /** "New app version" notification; tapping it opens the APK download link in the browser. */
+    static void updateAvailable(Context ctx, String text, String url) {
+        PendingIntent pi = PendingIntent.getActivity(ctx, 1,
+                new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)),
+                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0));
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(ctx, CHANNEL_UPDATE) : new Notification.Builder(ctx);
+        b.setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("Grbl Sender update available")
+                .setContentText(text)
+                .setContentIntent(pi)
+                .setAutoCancel(true);
+        notifyManager(ctx).notify(ID_UPDATE, b.build());
     }
 
     // ---------------------------------------------------------------- Service
@@ -123,6 +140,9 @@ public class JobService extends Service {
             NotificationChannel pause = new NotificationChannel(CHANNEL_PAUSE, "Program pause (M0)", NotificationManager.IMPORTANCE_HIGH);
             pause.setDescription("The program stopped at M0/M1 and waits for Resume");
             nm.createNotificationChannel(pause);
+            NotificationChannel upd = new NotificationChannel(CHANNEL_UPDATE, "App updates", NotificationManager.IMPORTANCE_DEFAULT);
+            upd.setDescription("A newer Grbl Sender version is on the backoffice");
+            nm.createNotificationChannel(upd);
         }
         return nm;
     }

@@ -203,17 +203,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        RemoteLog.init(getApplicationContext(), (code, name) -> ui.post(() -> {
-            if (isFinishing()) return;
-            new AlertDialog.Builder(this)
-                    .setTitle("Update available")
-                    .setMessage("Version " + name + " (" + code + ") is available. You have "
-                            + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ").")
-                    .setPositiveButton("Download", (d, w) -> startActivity(
-                            new Intent(Intent.ACTION_VIEW, Uri.parse(RemoteLog.downloadUrl()))))
-                    .setNegativeButton("Later", null)
-                    .show();
-        }));
+        // RemoteLog's own startup check is replaced by the update checker below (respects the auto-check setting)
+        RemoteLog.init(getApplicationContext(), (code, name) -> { });
+        ui.postDelayed(autoUpdateCheck, 3000);
         usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
 
         baudSpinner = findViewById(R.id.baud);
@@ -344,6 +336,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             RemoteLog.e("app", "app closed during run at line " + ackedLines + "/" + program.size() + " – job aborted");
             JobService.stop(this, "App was closed – job aborted at line " + ackedLines + " / " + program.size());
         }
+        ui.removeCallbacks(autoUpdateCheck);
         unregisterReceiver(usbReceiver);
         disconnect();
         writer.shutdown();
@@ -1579,14 +1572,212 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     private void showMenu(View anchor) {
         android.widget.PopupMenu m = new android.widget.PopupMenu(this, anchor);
-        m.getMenu().add(0, 2, 0, "Update firmware…");
-        m.getMenu().add(0, 1, 1, "About");
+        m.getMenu().add(0, 3, 0, "App update…" + (updateCode > BuildConfig.VERSION_CODE ? "  ●" : ""));
+        m.getMenu().add(0, 2, 1, "Update firmware…");
+        m.getMenu().add(0, 1, 2, "About");
         m.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == 1) showAbout();
             if (item.getItemId() == 2) showFirmwareMenu();
+            if (item.getItemId() == 3) showUpdatePage();
             return true;
         });
         m.show();
+    }
+
+    // ---------------------------------------------------------------- App update page
+
+    private static final long UPDATE_INTERVAL_MS = 6 * 3600 * 1000L;
+    private int updateCode;                       // newest versionCode seen on the backoffice
+    private org.json.JSONObject updateInfo;
+    private android.app.Dialog updDialog;
+    private TextView updStatus, updLatest;
+    private android.widget.LinearLayout updHistory;
+    private Button updDownloadBtn;
+
+    private boolean autoUpdateEnabled() { return getPreferences(MODE_PRIVATE).getBoolean("autoUpdate", true); }
+
+    /** At start and every 6 h while the app runs: check the backoffice, notify once per new version. */
+    private final Runnable autoUpdateCheck = new Runnable() {
+        @Override public void run() {
+            ui.removeCallbacks(this);
+            if (autoUpdateEnabled()) checkForUpdate(false);
+            ui.postDelayed(this, UPDATE_INTERVAL_MS);
+        }
+    };
+
+    private void checkForUpdate(boolean manual) {
+        if (updStatus != null) updStatus.setText("Checking " + BuildConfig.LOG_SERVER + " …");
+        worker.execute(() -> {
+            org.json.JSONObject v = null;
+            org.json.JSONArray history = null;
+            String err = null;
+            try {
+                v = new org.json.JSONObject(RemoteLog.get("/api/version"));
+                try { history = new org.json.JSONArray(RemoteLog.get("/api/releases")); } catch (Exception ignored) { }
+            } catch (Exception e) {
+                err = e.getMessage();
+            }
+            final org.json.JSONObject ver = v;
+            final org.json.JSONArray hist = history;
+            final String error = err;
+            ui.post(() -> onUpdateChecked(ver, hist, error, manual));
+        });
+    }
+
+    private void onUpdateChecked(org.json.JSONObject v, org.json.JSONArray history, String error, boolean manual) {
+        String when = new java.text.SimpleDateFormat("HH:mm", Locale.US).format(new java.util.Date());
+        if (v == null) {
+            RemoteLog.w("update", "check failed: " + error);
+            if (updStatus != null) updStatus.setText("Could not reach the backoffice (" + error + ") – " + when);
+            return;
+        }
+        updateInfo = v;
+        updateCode = v.optInt("versionCode", 0);
+        boolean newer = updateCode > BuildConfig.VERSION_CODE;
+        if (newer) {
+            SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+            String text = "Version " + v.optString("versionName") + " is available (you have " + BuildConfig.VERSION_NAME + ")";
+            if (prefs.getInt("notifiedCode", 0) != updateCode) {
+                prefs.edit().putInt("notifiedCode", updateCode).apply();
+                JobService.updateAvailable(this, text + " – tap to download", RemoteLog.downloadUrl());
+                RemoteLog.i("update", "notified about " + v.optString("versionName") + " (" + updateCode + ")");
+                if (!manual && updDialog == null && !isFinishing()) {
+                    new AlertDialog.Builder(this)
+                            .setTitle("Update available")
+                            .setMessage(text + ".\n\n" + v.optString("notes"))
+                            .setPositiveButton("Details", (d, w) -> showUpdatePage())
+                            .setNegativeButton("Later", null)
+                            .show();
+                }
+            }
+        }
+        if (updDialog != null) fillUpdatePage(v, history, when);
+    }
+
+    private void showUpdatePage() {
+        float dp = getResources().getDisplayMetrics().density;
+        int pad = (int) (16 * dp);
+        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
+        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+        root.setPadding(pad, pad, pad, pad);
+        root.setBackgroundColor(0xFF1D2024);
+
+        TextView title = new TextView(this);
+        title.setText("App update");
+        title.setTextSize(22);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        title.setTextColor(0xFFE3E6EA);
+        root.addView(title);
+
+        TextView installed = new TextView(this);
+        installed.setTextColor(0xFFE3E6EA);
+        installed.setPadding(0, (int) (8 * dp), 0, 0);
+        installed.setText("Installed: Grbl Sender " + BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE
+                + "), built " + BuildConfig.BUILD_TIME);
+        root.addView(installed);
+
+        updLatest = new TextView(this);
+        updLatest.setTextSize(16);
+        updLatest.setPadding(0, (int) (6 * dp), 0, 0);
+        root.addView(updLatest);
+
+        updStatus = new TextView(this);
+        updStatus.setTextColor(0xFF8B939C);
+        updStatus.setPadding(0, (int) (4 * dp), 0, (int) (8 * dp));
+        root.addView(updStatus);
+
+        TextView link = new TextView(this);
+        link.setText("Download link: " + RemoteLog.downloadUrl());
+        link.setTextColor(0xFF4EA1FF);
+        link.setPaintFlags(link.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
+        link.setTextIsSelectable(true);
+        link.setOnClickListener(v -> openDownload());
+        root.addView(link);
+
+        android.widget.Switch auto = new android.widget.Switch(this);
+        auto.setText("Check for updates automatically (at start and every 6 hours)");
+        auto.setTextColor(0xFFE3E6EA);
+        auto.setChecked(autoUpdateEnabled());
+        auto.setPadding(0, (int) (10 * dp), 0, (int) (10 * dp));
+        auto.setOnCheckedChangeListener((b, on) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("autoUpdate", on).apply();
+            if (on) ui.postDelayed(autoUpdateCheck, 500);
+        });
+        root.addView(auto);
+
+        TextView hdr = new TextView(this);
+        hdr.setText("Release history");
+        hdr.setTextColor(0xFF8B939C);
+        root.addView(hdr);
+        ScrollView sv = new ScrollView(this);
+        sv.setBackgroundColor(0xFF111316);
+        updHistory = new android.widget.LinearLayout(this);
+        updHistory.setOrientation(android.widget.LinearLayout.VERTICAL);
+        updHistory.setPadding(pad / 2, pad / 2, pad / 2, pad / 2);
+        sv.addView(updHistory);
+        root.addView(sv, new android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        android.widget.LinearLayout buttons = new android.widget.LinearLayout(this);
+        Button check = new Button(this);
+        check.setText("Check now");
+        Button close = new Button(this);
+        close.setText("Close");
+        updDownloadBtn = new Button(this);
+        updDownloadBtn.setText("⬇ Download & install");
+        updDownloadBtn.setTextColor(0xFF4CD07D);
+        updDownloadBtn.setEnabled(false);
+        for (Button b : new Button[]{check, close, updDownloadBtn}) {
+            b.setAllCaps(false);
+            buttons.addView(b, new android.widget.LinearLayout.LayoutParams(0,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, b == updDownloadBtn ? 1.6f : 1f));
+        }
+        root.addView(buttons);
+        check.setOnClickListener(v -> checkForUpdate(true));
+        close.setOnClickListener(v -> updDialog.dismiss());
+        updDownloadBtn.setOnClickListener(v -> openDownload());
+
+        updDialog = new android.app.Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
+        updDialog.setContentView(root);
+        updDialog.setOnDismissListener(d -> { updDialog = null; updStatus = null; });
+        updDialog.show();
+        checkForUpdate(true);
+    }
+
+    private void fillUpdatePage(org.json.JSONObject v, org.json.JSONArray history, String when) {
+        boolean newer = v.optInt("versionCode", 0) > BuildConfig.VERSION_CODE;
+        String date = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new java.util.Date(v.optLong("published")));
+        if (v.optInt("versionCode", 0) == 0) {
+            updLatest.setText("No release published on the backoffice.");
+            updLatest.setTextColor(0xFF8B939C);
+        } else {
+            updLatest.setText((newer ? "⬆ Update available: " : "✔ Up to date. Latest: ") + v.optString("versionName")
+                    + " (build " + v.optInt("versionCode") + "), " + date
+                    + (v.optString("notes").isEmpty() ? "" : "\n" + v.optString("notes")));
+            updLatest.setTextColor(newer ? 0xFF4CD07D : 0xFFB8E0B8);
+        }
+        updStatus.setText("Checked " + BuildConfig.LOG_SERVER + " at " + when);
+        updDownloadBtn.setEnabled(newer);
+        updHistory.removeAllViews();
+        if (history != null) {
+            for (int i = 0; i < history.length(); i++) {
+                org.json.JSONObject r = history.optJSONObject(i);
+                TextView t = new TextView(this);
+                boolean current = r.optInt("versionCode") == BuildConfig.VERSION_CODE;
+                t.setText(String.format(Locale.US, "%s  v%s (build %d)  %s%s\n%s",
+                        current ? "▶" : "  ", r.optString("versionName"), r.optInt("versionCode"),
+                        new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new java.util.Date(r.optLong("published"))),
+                        current ? "  (installed)" : "", r.optString("notes")));
+                t.setTextColor(current ? 0xFFFFB020 : 0xFFE3E6EA);
+                t.setPadding(0, 6, 0, 10);
+                updHistory.addView(t);
+            }
+        }
+    }
+
+    private void openDownload() {
+        RemoteLog.i("update", "download opened from " + BuildConfig.VERSION_NAME);
+        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(RemoteLog.downloadUrl())));
     }
 
     private void showAbout() {
