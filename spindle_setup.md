@@ -102,8 +102,11 @@ Size: 29,690 / 30,720 bytes.
 6. `M3`, then tap **Reset**: the spindle stops. `M3`, then unplug USB: the spindle stops.
 7. Re-download `dome_parts_30mm_8mm_F2000.nc` on the tablet (the version with M3/M5).
 
-## (B) Blue Pill (STM32F103C8T6, grblHAL)
+## (B) Blue Pill (STM32F103C8T6)
 
-Same optocoupler wiring, but the spindle-enable signal is on **PB1** instead of D13
-(grblHAL `BOARD_CNC3040` map). PWM is PA8, direction PB0. M3/M5, reset and alarm behave the same,
-and PB1 is 3.3 V like the Pro Mini. Full pin map: `firmware/bluepill/BUILD.md`.
+Same optocoupler wiring, from a different pin:
+- **64 KB board (this machine), Grbl 1.1f:** spindle enable on **PB13** (PWM PA8, direction PB14).
+- 128 KB board, grblHAL: spindle enable on PB1 (PWM PA8, direction PB0).
+
+M3/M5, reset and alarm behave the same. Outputs are 3.3 V like the Pro Mini.
+Pin maps: `firmware/bluepill/BUILD.md`.
