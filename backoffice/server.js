@@ -181,7 +181,7 @@ async function handle(req, res) {
   if (isGet && /^\/firmware\/[\w.\-]+\.hex$/.test(p)) {
     const name = path.basename(p);
     return serveFile(res, path.join(FIRMWARE_DIR, name), {
-      'Content-Type': 'text/plain; charset=us-ascii',
+      'Content-Type': 'application/octet-stream',
       'Content-Disposition': `attachment; filename="${name}"`,
     });
   }
