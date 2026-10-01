@@ -1,0 +1,27 @@
+diff --git a/Makefile b/Makefile
+index 9e20a43..23944c7 100644
+--- a/Makefile
++++ b/Makefile
+@@ -29,7 +29,7 @@
+ # FUSES ........ Parameters for avrdude to flash the fuses appropriately.
+ 
+ DEVICE     ?= atmega328p
+-CLOCK      = 16000000
++CLOCK      = 8000000  # Arduino Pro Mini 3.3V
+ PROGRAMMER ?= -c avrisp2 -P usb
+ SOURCE    = main.c motion_control.c gcode.c spindle_control.c coolant_control.c serial.c \
+              protocol.c stepper.c eeprom.c settings.c planner.c nuts_bolts.c limits.c jog.c\
+diff --git a/grbl/config.h b/grbl/config.h
+index f48d958..1ff5c8b 100644
+--- a/grbl/config.h
++++ b/grbl/config.h
+@@ -39,7 +39,8 @@
+ 
+ // Serial baud rate
+ // #define BAUD_RATE 230400
+-#define BAUD_RATE 115200
++// #define BAUD_RATE 115200 // 3.5% error at 8 MHz (Pro Mini 3.3V) -> RX corruption
++#define BAUD_RATE 38400  // 0.16% error at 8 MHz
+ 
+ // Define realtime command special characters. These characters are 'picked-off' directly from the
+ // serial read data stream and are not passed to the grbl line execution parser. Select characters

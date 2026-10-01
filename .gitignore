@@ -1,0 +1,20 @@
+# upstream Grbl clone (our changes are in firmware/*.patch)
+/grbl/
+
+# secrets / runtime data
+backoffice/.env
+backoffice/data/
+backoffice/apk/
+backoffice/gcode/
+node_modules/
+
+# Android build
+GrblSender/.gradle/
+GrblSender/app/build/
+GrblSender/build/
+GrblSender/local.properties
+*.apk
+
+# Python
+cam/.venv/
+__pycache__/

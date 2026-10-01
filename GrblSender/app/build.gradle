@@ -1,0 +1,29 @@
+plugins { id 'com.android.application' }
+
+def backofficeEnv = new Properties()
+def envFile = rootProject.file('../backoffice/.env')
+if (envFile.exists()) envFile.withInputStream { backofficeEnv.load(it) }
+
+android {
+    namespace 'org.dnaboy.grblsender'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'org.dnaboy.grblsender'
+        minSdk 21
+        targetSdk 34
+        versionCode 12
+        versionName '1.11'
+        buildConfigField 'String', 'BUILD_TIME', "\"${new Date().format('yyyy-MM-dd HH:mm')}\""
+        buildConfigField 'String', 'LOG_SERVER', '"http://192.168.219.157:3077"'
+        buildConfigField 'String', 'INGEST_KEY', "\"${backofficeEnv.getProperty('INGEST_KEY', '')}\""
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'com.github.mik3y:usb-serial-for-android:3.8.1'
+}

@@ -1,0 +1,380 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#15171A"
+    android:keepScreenOn="true">
+
+    <!-- Toolbar: file + job -->
+    <LinearLayout
+        android:id="@+id/toolbarRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="#1D2024"
+        android:paddingStart="6dp"
+        android:paddingEnd="6dp">
+
+        <HorizontalScrollView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button android:id="@+id/btnNew" style="@style/Tb" android:text="New" />
+                <Button android:id="@+id/btnOpen" style="@style/Tb" android:text="Open" />
+                <Button android:id="@+id/btnSave" style="@style/Tb" android:text="Save" />
+                <Button android:id="@+id/btnSaveAs" style="@style/Tb" android:text="Save As" />
+                <Button android:id="@+id/btnClose" style="@style/Tb" android:text="Close" />
+                <View android:layout_width="1dp" android:layout_height="28dp"
+                    android:layout_marginStart="6dp" android:layout_marginEnd="6dp" android:background="#3A4048" />
+                <Button android:id="@+id/btnLoad" style="@style/Tb" android:text="⇩ Load" />
+                <Button android:id="@+id/btnRun" style="@style/Tb" android:text="▶ Run" android:textColor="#4CD07D" />
+                <Button android:id="@+id/btnHold" style="@style/Tb" android:text="❚❚ Hold" android:textColor="#F0C050" />
+                <Button android:id="@+id/btnResume" style="@style/Tb" android:text="Resume" />
+                <Button android:id="@+id/btnStop" style="@style/Tb" android:text="■ Stop" android:textColor="#FF6B6B" />
+            </LinearLayout>
+        </HorizontalScrollView>
+
+        <TextView
+            android:id="@+id/txtFile"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:maxWidth="320dp"
+            android:singleLine="true"
+            android:ellipsize="middle"
+            android:paddingStart="8dp"
+            android:text="No file"
+            android:textColor="#E3E6EA"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnMenu"
+            style="@style/Tb"
+            android:minWidth="48dp"
+            android:textSize="22sp"
+            android:contentDescription="Menu"
+            android:text="☰" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/progressRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
+
+        <ProgressBar
+            android:id="@+id/progress"
+            style="@android:style/Widget.Material.ProgressBar.Horizontal"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:max="1000" />
+
+        <TextView
+            android:id="@+id/txtJob"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="8dp"
+            android:text="Not loaded"
+            android:textColor="#8B939C"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Body -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal">
+
+        <!-- Left: machine -->
+        <ScrollView
+            android:id="@+id/leftPanel"
+            android:layout_width="240dp"
+            android:layout_height="match_parent"
+            android:background="#1D2024">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="6dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Spinner
+                        android:id="@+id/baud"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1" />
+
+                    <Button
+                        android:id="@+id/btnConnect"
+                        style="@style/Btn"
+                        android:text="Connect" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/txtState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Disconnected"
+                    android:textSize="20sp"
+                    android:textStyle="bold"
+                    android:textColor="#AAAAAA"
+                    android:paddingTop="4dp" />
+
+                <TextView
+                    android:id="@+id/txtPos"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:textSize="17sp"
+                    android:textColor="#E0E0E0"
+                    android:text="X    0.000\nY    0.000\nZ    0.000" />
+
+                <TextView
+                    android:id="@+id/txtMPos"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:textSize="11sp"
+                    android:textColor="#888888"
+                    android:text="MPos 0.000, 0.000, 0.000" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="4dp">
+
+                    <Button android:id="@+id/btnUnlock" style="@style/Btn" android:text="$X" />
+                    <Button android:id="@+id/btnHome" style="@style/Btn" android:text="$H" />
+                    <Button android:id="@+id/btnReset" style="@style/Btn" android:text="Reset" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button android:id="@+id/btnZeroXY" style="@style/Btn" android:text="0 XY" />
+                    <Button android:id="@+id/btnZeroZ" style="@style/Btn" android:text="0 Z" />
+                    <Button android:id="@+id/btnGoZero" style="@style/Btn" android:text="→XY0" />
+                </LinearLayout>
+
+                <RadioGroup
+                    android:id="@+id/stepGroup"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="4dp">
+
+                    <RadioButton android:id="@+id/s01" style="@style/Radio" android:text=".1" />
+                    <RadioButton android:id="@+id/s1" style="@style/Radio" android:text="1" android:checked="true" />
+                    <RadioButton android:id="@+id/s10" style="@style/Radio" android:text="10" />
+                    <RadioButton android:id="@+id/s50" style="@style/Radio" android:text="50" />
+                </RadioGroup>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Jog F "
+                        android:textColor="#CCCCCC" />
+
+                    <EditText
+                        android:id="@+id/jogFeed"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="number"
+                        android:text="500"
+                        android:textColor="#FFFFFF" />
+                </LinearLayout>
+
+                <GridLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:columnCount="4"
+                    android:rowCount="3">
+
+                    <Space android:layout_width="54dp" android:layout_height="52dp" />
+                    <Button android:id="@+id/jYp" style="@style/Jog" android:text="Y+" />
+                    <Space android:layout_width="54dp" android:layout_height="52dp" />
+                    <Button android:id="@+id/jZp" style="@style/Jog" android:text="Z+" />
+
+                    <Button android:id="@+id/jXm" style="@style/Jog" android:text="X−" />
+                    <Button android:id="@+id/jStop" style="@style/Jog" android:text="■" />
+                    <Button android:id="@+id/jXp" style="@style/Jog" android:text="X+" />
+                    <Space android:layout_width="54dp" android:layout_height="52dp" />
+
+                    <Space android:layout_width="54dp" android:layout_height="52dp" />
+                    <Button android:id="@+id/jYm" style="@style/Jog" android:text="Y−" />
+                    <Space android:layout_width="54dp" android:layout_height="52dp" />
+                    <Button android:id="@+id/jZm" style="@style/Jog" android:text="Z−" />
+                </GridLayout>
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- Middle: editor / console -->
+        <LinearLayout
+            android:id="@+id/middlePanel"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button android:id="@+id/tabEditor" style="@style/Tab" android:text="Editor" />
+                <Button android:id="@+id/tabConsole" style="@style/Tab" android:text="Console" />
+            </LinearLayout>
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1">
+
+                <org.dnaboy.grblsender.GCodeEditor
+                    android:id="@+id/editor"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+
+                <org.dnaboy.grblsender.GCodeViewer
+                    android:id="@+id/viewer"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:visibility="gone" />
+
+                <ScrollView
+                    android:id="@+id/logScroll"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="#111214"
+                    android:padding="4dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/txtLog"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:textSize="12sp"
+                        android:textColor="#B8E0B8"
+                        android:textIsSelectable="true" />
+                </ScrollView>
+            </FrameLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/cmdInput"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="G-code or $ command"
+                    android:imeOptions="actionSend"
+                    android:inputType="textCapCharacters|textNoSuggestions"
+                    android:singleLine="true"
+                    android:textColor="#FFFFFF"
+                    android:textColorHint="#777777" />
+
+                <Button
+                    android:id="@+id/btnSend"
+                    style="@style/Tb"
+                    android:text="Send" />
+
+                <Button
+                    android:id="@+id/btnSettings"
+                    style="@style/Tb"
+                    android:text="$$" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Right: toolpath preview -->
+        <FrameLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1">
+
+            <org.dnaboy.grblsender.ToolpathView
+                android:id="@+id/preview"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_margin="6dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnFit"
+                    style="@style/Tb"
+                    android:text="Fit" />
+
+                <Button
+                    android:id="@+id/btnFull"
+                    style="@style/Tb"
+                    android:minWidth="48dp"
+                    android:textSize="20sp"
+                    android:contentDescription="Full screen preview"
+                    android:text="⛶" />
+            </LinearLayout>
+
+            <!-- Shown only in full-screen mode: keep Hold/Stop within reach while the job runs -->
+            <LinearLayout
+                android:id="@+id/fullControls"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|end"
+                android:layout_marginEnd="8dp"
+                android:layout_marginBottom="28dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/fullState"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:background="#CC15171A"
+                    android:padding="8dp"
+                    android:textColor="#E3E6EA"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <Button android:id="@+id/fullHold" style="@style/Tb" android:text="❚❚ Hold" android:textColor="#F0C050" />
+                <Button android:id="@+id/fullResume" style="@style/Tb" android:text="Resume" />
+                <Button android:id="@+id/fullStop" style="@style/Tb" android:text="■ Stop" android:textColor="#FF6B6B" />
+            </LinearLayout>
+        </FrameLayout>
+    </LinearLayout>
+</LinearLayout>
