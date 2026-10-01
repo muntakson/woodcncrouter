@@ -56,17 +56,19 @@ import java.util.concurrent.Executors;
 /**
  * Grbl 1.1 G-code sender over USB OTG serial (CH340/FTDI/CP210x/CDC) with a
  * G-code editor, toolpath preview and live tracing while a job runs.
- * Streaming uses Grbl's character-counting protocol: keep at most RX_BUFFER
+ * Streaming uses Grbl's character-counting protocol: keep at most rxLimit
  * bytes outstanding, release them as each "ok"/"error" comes back.
  */
 public class MainActivity extends Activity implements SerialLink.Listener {
 
     private static final String ACTION_USB_PERMISSION = "org.dnaboy.grblsender.USB_PERMISSION";
+    private static final String ACTION_DFU_PERMISSION = "org.dnaboy.grblsender.DFU_PERMISSION";
     private static final int REQ_OPEN_FILE = 1;
     private static final int REQ_SAVE_AS = 2;
     private static final int REQ_FIRMWARE = 4;
     private static final int FLASH_LIMIT = 30720;    // 32 KB minus the 2 KB Pro Mini bootloader
-    private static final int RX_BUFFER = 127;        // Grbl serial RX buffer is 128 bytes
+    /** Bytes we may have outstanding in the controller's RX buffer: 127 for classic Grbl (128-byte buffer), raised from $I. */
+    private int rxLimit = 127;
     private static final int STATUS_POLL_MS = 250;
     private static final int MAX_LOG_CHARS = 20000;
     private static final int PLANNER_LOOKBACK = 24;  // lines that may sit in Grbl's planner + RX buffer
@@ -292,6 +294,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_USB_PERMISSION);
+        filter.addAction(ACTION_DFU_PERMISSION);
         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
@@ -354,7 +357,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     d.getProductName() != null ? d.getProductName() : ""));
             RemoteLog.d("usb", dumpDevice(d));
         }
-        List<UsbSerialDriver> drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager);
+        List<UsbSerialDriver> drivers = serialProber().findAllDrivers(usbManager);
+        if (drivers.isEmpty() && findDfuDevice() != null) {
+            log("Blue Pill bootloader (DFU 1EAF:0003) detected – use ☰ → Blue Pill firmware, then reset with BOOT1 = 0");
+            return;
+        }
         if (drivers.isEmpty()) {
             log("No USB serial device found. Check the OTG cable.");
             return;
@@ -369,6 +376,20 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 .setTitle("Select USB serial device")
                 .setItems(names, (dlg, which) -> connect(drivers.get(which)))
                 .show();
+    }
+
+    /** Default drivers plus grblHAL's Blue Pill USB serial (STM32 Virtual ComPort, CDC ACM). */
+    private static UsbSerialProber serialProber() {
+        com.hoho.android.usbserial.driver.ProbeTable t = UsbSerialProber.getDefaultProbeTable();
+        t.addProduct(DfuFlasher.VID_ST, DfuFlasher.PID_ST_VCP, com.hoho.android.usbserial.driver.CdcAcmSerialDriver.class);
+        return new UsbSerialProber(t);
+    }
+
+    private UsbDevice findDfuDevice() {
+        for (UsbDevice d : usbManager.getDeviceList().values()) {
+            if (d.getVendorId() == DfuFlasher.VID_MAPLE && d.getProductId() == DfuFlasher.PID_MAPLE_DFU) return d;
+        }
+        return null;
     }
 
     private String dumpDevice(UsbDevice d) {
@@ -446,6 +467,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         port = link;
         resetStreamState();
         log("Connected: " + describe(driver) + " @ " + baud + (ch340 ? " (built-in CH340 driver)" : ""));
+        rxLimit = 127;
+        fwVersion = null;
+        fwOptions = null;
+        if (driver.getDevice().getVendorId() == DfuFlasher.VID_ST) {
+            log("Blue Pill (grblHAL, native USB) – sending a soft reset");
+            ui.postDelayed(() -> { if (port == link) writeRaw(new byte[]{0x18}); }, 300);
+        }
         ui.postDelayed(() -> {
             if (port == link && !gotData) log("Warning: no data from Arduino yet (expected Grbl banner)");
         }, 4000);
@@ -572,7 +600,14 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (line.startsWith("[VER:") || line.startsWith("[OPT:")) {
             String v = line.substring(5, line.length() - (line.endsWith("]") ? 1 : 0));
             if (line.startsWith("[VER:")) fwVersion = v.endsWith(":") ? v.substring(0, v.length() - 1) : v;
-            else fwOptions = v;
+            else {
+                fwOptions = v;
+                // [OPT:flags,planner blocks,rx buffer] -> use the real RX buffer size (grblHAL: 512+)
+                String[] o = v.split(",");
+                if (o.length >= 3) {
+                    try { rxLimit = Math.max(63, Math.min(1023, Integer.parseInt(o[2].trim()) - 1)); } catch (NumberFormatException ignored) { }
+                }
+            }
             updateInstalledText();
             if (silentAcks > 0) return;
         }
@@ -648,7 +683,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 break;
             }
             int len = line.length() + 1;
-            if (inFlightBytes + len > RX_BUFFER && !inFlight.isEmpty()) break;
+            if (inFlightBytes + len > rxLimit && !inFlight.isEmpty()) break;
             if (fromProgram) nextLine++; else manualQueue.poll();
             inFlight.add(new Sent(len, fromProgram));
             inFlightBytes += len;
@@ -1194,6 +1229,19 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             loadDocument(uri, true);
         } else if (requestCode == REQ_FIRMWARE) {
             try (InputStream in = getContentResolver().openInputStream(uri)) {
+                if (blue()) {
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                    byte[] bin = bo.toByteArray();
+                    if (bin.length > 0 && bin[0] == ':') {
+                        log("That is an Intel HEX file – the Blue Pill needs the raw .bin built for 0x08002000");
+                        return;
+                    }
+                    confirmDfuFlash(bin, displayName(uri), "from the tablet's storage");
+                    return;
+                }
                 confirmFlash(readAll(in), displayName(uri), "from the tablet's storage");
             } catch (Exception e) {
                 log("Could not read firmware file: " + e.getMessage());
@@ -1242,10 +1290,16 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private final List<org.json.JSONObject> fwItems = new ArrayList<>();
     private int fwSelected = -1;
     private boolean fwBusy;
+    /** "promini" (Arduino Pro Mini, STK500 .hex) or "bluepill" (STM32F103C8, Maple DFU .bin). */
+    private String fwTarget = "promini";
+    private boolean blue() { return "bluepill".equals(fwTarget); }
 
     /** Full-screen page: installed firmware, list of builds on the backoffice, download + flash with progress. */
-    private void showFirmwareMenu() {
+    private void showFirmwareMenu(String target) {
         if (streaming) { log("Stop the running job before updating the firmware"); return; }
+        fwTarget = target;
+        fwItems.clear();
+        fwSelected = -1;
         float dp = getResources().getDisplayMetrics().density;
         int pad = (int) (16 * dp);
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
@@ -1254,7 +1308,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         root.setBackgroundColor(0xFF1D2024);
 
         TextView title = new TextView(this);
-        title.setText("Arduino firmware");
+        title.setText(blue() ? "(B) Blue Pill STM32F103C8T6 firmware" : "(A) Arduino Pro Mini firmware");
         title.setTextSize(22);
         title.setTextColor(0xFFE3E6EA);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -1266,6 +1320,16 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         root.addView(fwInstalled);
         updateInstalledText();
 
+        if (blue()) {
+            TextView how = new TextView(this);
+            how.setTextColor(0xFFF0C050);
+            how.setText("Flashing uses the STM32duino bootloader over the Blue Pill's own USB port (USB DFU).\n"
+                    + "After you tap Download & Flash: set the BOOT1 jumper to 1 and press RESET (the bootloader then stays active), "
+                    + "or just press RESET – the app catches the bootloader as soon as it appears.\n"
+                    + "Afterwards: BOOT1 back to 0 and RESET; the Blue Pill reappears as \"STM32 Virtual ComPort\".");
+            how.setPadding(0, 0, 0, (int) (8 * dp));
+            root.addView(how);
+        }
         TextView hdr = new TextView(this);
         hdr.setText("Available on the backoffice (" + BuildConfig.LOG_SERVER + ")");
         hdr.setTextColor(0xFF8B939C);
@@ -1367,28 +1431,32 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void updateInstalledText() {
         if (fwInstalled == null) return;
         String board = pendingDriver != null ? describe(pendingDriver) : "no board connected";
+        if (blue() && findDfuDevice() != null) board += " · bootloader (DFU) present now";
         if (port == null) {
-            fwInstalled.setText("Installed: unknown – connect to the Arduino to read it (" + board + ")");
+            fwInstalled.setText("Installed: unknown – connect to the board to read it (" + board + ")");
         } else if (fwVersion == null) {
             fwInstalled.setText("Installed: reading… (" + board + ")");
         } else {
             String opt = fwOptions != null ? fwOptions : "";
             String flags = opt.contains(",") ? opt.substring(0, opt.indexOf(',')) : opt;
+            boolean isBlue = pendingDriver != null && pendingDriver.getDevice().getVendorId() == DfuFlasher.VID_ST;
+            String[] o = opt.split(",");
             fwInstalled.setText("Installed: Grbl " + fwVersion + " · options " + flags
-                    + (flags.contains("D") ? " (D13 = spindle enable)" : " (no spindle-enable pin)")
+                    + (isBlue ? " (grblHAL on Blue Pill)" : flags.contains("D") ? " (D13 = spindle enable)" : " (no spindle-enable pin)")
+                    + (o.length >= 3 ? " · planner " + o[1].trim() + " blocks, RX " + o[2].trim() + " bytes" : "")
                     + "\nBoard: " + board);
         }
     }
 
     private void updateFirmwareButtons() {
         if (fwDialog == null) return;
-        boolean canFlash = !fwBusy && !streaming && pendingDriver != null;
+        boolean canFlash = !fwBusy && !streaming && (blue() || pendingDriver != null);
         fwFlashBtn.setEnabled(canFlash && fwSelected >= 0);
         fwFileBtn.setEnabled(canFlash);
         fwRefreshBtn.setEnabled(!fwBusy);
         fwCloseBtn.setEnabled(!fwBusy);
         fwList.setEnabled(!fwBusy);
-        if (!fwBusy && pendingDriver == null) fwStatus.setText("Connect to the Arduino first – flashing needs its USB device.");
+        if (!fwBusy && !blue() && pendingDriver == null) fwStatus.setText("Connect to the Arduino first – flashing needs its USB device.");
     }
 
     private void loadFirmwareList() {
@@ -1399,7 +1467,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             String err = null;
             try {
                 org.json.JSONArray a = new org.json.JSONArray(RemoteLog.get("/api/firmware"));
-                for (int i = 0; i < a.length(); i++) items.add(a.getJSONObject(i));
+                for (int i = 0; i < a.length(); i++) {
+                    org.json.JSONObject f = a.getJSONObject(i);
+                    if (f.optString("target", "promini").equals(fwTarget)) items.add(f);   // never offer the other board's firmware
+                }
             } catch (Exception e) {
                 err = e.getMessage();
             }
@@ -1424,6 +1495,34 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         fwStatus.setText("Downloading " + f.optString("file") + "…");
         fwBar.setVisibility(View.VISIBLE);
         fwBar.setIndeterminate(true);
+        if (blue()) {
+            worker.execute(() -> {
+                try {
+                    byte[] bin = RemoteLog.getBytes(f.optString("url"));
+                    if (!f.optString("sha256").isEmpty() && !f.optString("sha256").equalsIgnoreCase(sha256(bin))) {
+                        throw new Exception("checksum mismatch – the download is corrupted");
+                    }
+                    ui.post(() -> {
+                        fwBusy = false;
+                        fwBar.setIndeterminate(false);
+                        fwBar.setProgress(0);
+                        fwStatus.setText("Downloaded " + bin.length + " bytes, SHA-256 OK.");
+                        updateFirmwareButtons();
+                        confirmDfuFlash(bin, f.optString("name"), f.optString("version")
+                                + (f.optString("notes").isEmpty() ? "" : "\n" + f.optString("notes")));
+                    });
+                } catch (Exception e) {
+                    ui.post(() -> {
+                        fwBusy = false;
+                        fwBar.setIndeterminate(false);
+                        fwBar.setVisibility(View.INVISIBLE);
+                        fwStatus.setText("Download failed: " + e.getMessage());
+                        updateFirmwareButtons();
+                    });
+                }
+            });
+            return;
+        }
         worker.execute(() -> {
             try {
                 String hex = RemoteLog.get(f.optString("url"));
@@ -1482,6 +1581,138 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 .setPositiveButton("Flash", (d, w) -> startFlash(img, name))
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    private void confirmDfuFlash(byte[] bin, String name, String details) {
+        String problem = null;
+        if (bin.length < 8 || bin.length > DfuFlasher.MAX_IMAGE) problem = "size " + bin.length + " bytes (allowed 1.." + DfuFlasher.MAX_IMAGE + ")";
+        else {
+            long sp = (bin[0] & 0xFFL) | (bin[1] & 0xFFL) << 8 | (bin[2] & 0xFFL) << 16 | (bin[3] & 0xFFL) << 24;
+            long reset = (bin[4] & 0xFFL) | (bin[5] & 0xFFL) << 8 | (bin[6] & 0xFFL) << 16 | (bin[7] & 0xFFL) << 24;
+            // vector table check: stack pointer in the 20 KB RAM, reset handler inside the image above the bootloader
+            if (sp < 0x20000000L || sp > 0x20005000L || reset < DfuFlasher.APP_BASE || reset >= DfuFlasher.APP_BASE + bin.length) {
+                problem = String.format(Locale.US, "not built for 0x08002000 (SP 0x%08X, reset 0x%08X)", sp, reset);
+            }
+        }
+        if (problem != null) {
+            if (fwStatus != null) fwStatus.setText("Not a usable Blue Pill image: " + problem);
+            new AlertDialog.Builder(this).setTitle("Not a usable Blue Pill image").setMessage(name + "\n\n" + problem)
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        String msg = name + "\n" + details + "\n\n"
+                + String.format(Locale.US, "%d bytes for 0x08002000 (%.0f%% of %d bytes)\n\n", bin.length,
+                100.0 * bin.length / DfuFlasher.MAX_IMAGE, DfuFlasher.MAX_IMAGE)
+                + "Next: set BOOT1 = 1 and press RESET on the Blue Pill (or just press RESET). "
+                + "The app waits up to 2 minutes for the bootloader, then writes and verifies.\n\n"
+                + "The STM32duino bootloader itself is never overwritten.";
+        new AlertDialog.Builder(this)
+                .setTitle("Flash Blue Pill?")
+                .setMessage(msg)
+                .setPositiveButton("Flash", (d, w) -> startDfuFlash(bin, name))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void startDfuFlash(byte[] bin, String name) {
+        if (streaming) return;
+        RemoteLog.i("dfu", "start: " + name + " (" + bin.length + " bytes)");
+        if (port != null) disconnect();
+        fwVersion = null;
+        fwOptions = null;
+        fwBusy = true;
+        updateFirmwareButtons();
+        final TextView status = fwStatus;
+        final ProgressBar bar = fwBar;
+        bar.setVisibility(View.VISIBLE);
+        bar.setIndeterminate(true);
+        status.setText("Waiting for the bootloader… set BOOT1 = 1 and press RESET on the Blue Pill (or press RESET now).");
+
+        new Thread(() -> {
+            String result;
+            boolean ok = false, verified = false;
+            UsbDeviceConnection conn = null;
+            UsbInterface claimed = null;
+            try {
+                UsbDevice dev = null;
+                long until = System.currentTimeMillis() + 120_000;
+                while ((dev = findDfuDevice()) == null) {
+                    if (System.currentTimeMillis() > until) throw new java.io.IOException("no bootloader (1EAF:0003) appeared within 2 minutes");
+                    Thread.sleep(250);
+                }
+                if (!usbManager.hasPermission(dev)) {
+                    final UsbDevice d = dev;
+                    ui.post(() -> {
+                        status.setText("Bootloader found – please allow USB access…");
+                        Intent pi = new Intent(ACTION_DFU_PERMISSION).setPackage(getPackageName());
+                        usbManager.requestPermission(d, PendingIntent.getBroadcast(this, 1, pi,
+                                Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0));
+                    });
+                    long pUntil = System.currentTimeMillis() + 60_000;
+                    while (!usbManager.hasPermission(dev)) {
+                        if (System.currentTimeMillis() > pUntil || findDfuDevice() == null) {
+                            throw new java.io.IOException("USB permission not granted in time, or the bootloader left DFU mode "
+                                    + "(use the BOOT1 = 1 jumper so it stays in the bootloader)");
+                        }
+                        Thread.sleep(200);
+                    }
+                }
+                // the alternate setting that writes to 0x08002000
+                UsbInterface target = null;
+                for (int i = 0; i < dev.getInterfaceCount(); i++) {
+                    UsbInterface it = dev.getInterface(i);
+                    if (it.getName() != null && it.getName().contains("8002000")) target = it;
+                }
+                if (target == null) {
+                    for (int i = 0; i < dev.getInterfaceCount(); i++) {
+                        if (dev.getInterface(i).getAlternateSetting() == 2) target = dev.getInterface(i);
+                    }
+                }
+                if (target == null) throw new java.io.IOException("bootloader has no \"Flash 0x8002000\" DFU target");
+                conn = usbManager.openDevice(dev);
+                if (conn == null) throw new java.io.IOException("could not open the bootloader USB device");
+                if (!conn.claimInterface(target, true)) throw new java.io.IOException("could not claim the DFU interface");
+                claimed = target;
+                if (!conn.setInterface(target)) throw new java.io.IOException("could not select DFU alt " + target.getAlternateSetting());
+                int[] fd = DfuFlasher.functionalDescriptor(conn.getRawDescriptors());
+                RemoteLog.i("dfu", "bootloader: alt " + target.getAlternateSetting() + " \"" + target.getName()
+                        + "\", transferSize " + fd[0] + ", canUpload " + (fd[1] == 1));
+                final UsbDeviceConnection c = conn;
+                final int intfNum = target.getId();
+                ui.post(() -> { bar.setIndeterminate(false); bar.setProgress(0); });
+                verified = new DfuFlasher((rt, rq, v, idx, buf, len, to) -> c.controlTransfer(rt, rq, v, idx, buf, len, to), intfNum)
+                        .flash(bin, fd[0], fd[1] == 1, new DfuFlasher.Progress() {
+                            @Override public void status(String m) { ui.post(() -> status.setText(m)); }
+                            @Override public void progress(int done, int total) {
+                                ui.post(() -> bar.setProgress((int) (1000L * done / total)));
+                            }
+                        });
+                ok = true;
+                result = "Blue Pill firmware installed" + (verified ? " and verified" : " (not verified – no read-back)")
+                        + ": " + name + " (" + bin.length + " bytes)";
+                RemoteLog.i("dfu", result);
+            } catch (Exception e) {
+                result = "Blue Pill flash failed: " + e.getMessage();
+                RemoteLog.e("dfu", result, e);
+            } finally {
+                if (conn != null) {
+                    if (claimed != null) conn.releaseInterface(claimed);
+                    conn.close();
+                }
+            }
+            final String r = result;
+            final boolean success = ok;
+            ui.post(() -> {
+                log(r);
+                fwBusy = false;
+                if (status != null) {
+                    status.setText((success ? "✔ " : "✖ ") + r + (success
+                            ? "\nNow set BOOT1 back to 0 and press RESET. The Blue Pill reappears as \"STM32 Virtual ComPort\" – then tap Connect."
+                            : "\nThe bootloader is untouched – you can simply try again."));
+                }
+                updateFirmwareButtons();
+            });
+        }, "dfu").start();
     }
 
     private void startFlash(IntelHex.Image img, String name) {
@@ -1573,11 +1804,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void showMenu(View anchor) {
         android.widget.PopupMenu m = new android.widget.PopupMenu(this, anchor);
         m.getMenu().add(0, 3, 0, "App update…" + (updateCode > BuildConfig.VERSION_CODE ? "  ●" : ""));
-        m.getMenu().add(0, 2, 1, "Update firmware…");
-        m.getMenu().add(0, 1, 2, "About");
+        m.getMenu().add(0, 2, 1, "(A) Pro Mini firmware…");
+        m.getMenu().add(0, 4, 2, "(B) Blue Pill firmware…");
+        m.getMenu().add(0, 1, 3, "About");
         m.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == 1) showAbout();
-            if (item.getItemId() == 2) showFirmwareMenu();
+            if (item.getItemId() == 2) showFirmwareMenu("promini");
+            if (item.getItemId() == 4) showFirmwareMenu("bluepill");
             if (item.getItemId() == 3) showUpdatePage();
             return true;
         });

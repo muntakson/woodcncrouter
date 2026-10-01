@@ -178,6 +178,26 @@ public final class RemoteLog {
         return readResponse(c);
     }
 
+    /** GET {@code path} as raw bytes (binary firmware images). Call off the UI thread. */
+    static byte[] getBytes(String path) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(BuildConfig.LOG_SERVER + path).openConnection();
+        c.setConnectTimeout(5000);
+        c.setReadTimeout(20000);
+        try {
+            int code = c.getResponseCode();
+            if (code / 100 != 2) throw new Exception("HTTP " + code);
+            try (InputStream in = c.getInputStream()) {
+                ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                return bo.toByteArray();
+            }
+        } finally {
+            c.disconnect();
+        }
+    }
+
     private static String readResponse(HttpURLConnection c) throws Exception {
         try {
             int code = c.getResponseCode();

@@ -19,3 +19,4 @@ GrblSender/local.properties
 cam/.venv/
 __pycache__/
 backoffice/firmware/
+grblhal-stm32f1/

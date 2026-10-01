@@ -7,6 +7,9 @@
     <usb-device vendor-id="1027" product-id="24577" />
     <!-- CP210x -->
     <usb-device vendor-id="4292" product-id="60000" />
+    <!-- Blue Pill: grblHAL USB serial (STM32 Virtual ComPort) and STM32duino/Maple DFU bootloader -->
+    <usb-device vendor-id="1155" product-id="22336" />
+    <usb-device vendor-id="7855" product-id="3" />
     <!-- Arduino (Uno, Mega, etc.) -->
     <usb-device vendor-id="9025" />
 </resources>
