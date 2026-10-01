@@ -89,6 +89,9 @@
     <h2>Latest APK</h2>
     <div class="rel" id="release"><div class="empty">No release published</div></div>
 
+    <h2>Arduino firmware</h2>
+    <div id="firmware"><div class="empty">No firmware published</div></div>
+
     <h2>G-code files</h2>
     <div id="gcode"><div class="empty">No G-code files</div></div>
 
@@ -248,6 +251,22 @@ function selectDevice(id) {
 }
 $('#allDev').onclick = () => selectDevice('');
 
+async function loadFirmware() {
+  const list = await fetch('/api/firmware').then((r) => r.json());
+  const box = $('#firmware');
+  if (!list.length) return;
+  box.textContent = '';
+  list.forEach((f, i) => {
+    const el = document.createElement('div');
+    el.className = 'gf';
+    el.innerHTML = `<div class="fname"></div><div class="meta"></div><a class="small" download>Download .hex</a>`;
+    el.querySelector('.fname').textContent = (i === 0 ? '★ ' : '') + f.name;
+    el.querySelector('.meta').textContent = `${f.version} · ${(f.size / 1024).toFixed(1)} KB · ${new Date(f.published).toLocaleString()}` + (f.notes ? ` · ${f.notes}` : '');
+    el.querySelector('a').href = f.url;
+    box.appendChild(el);
+  });
+}
+
 async function loadGcode() {
   const files = await fetch('/api/gcode').then((r) => r.json());
   const box = $('#gcode');
@@ -337,6 +356,7 @@ $('#export').onclick = () => {
 loadDevices().then(loadLogs);
 loadReleases();
 loadGcode();
+loadFirmware();
 connectStream();
 setInterval(loadDevices, 10000);
 </script>

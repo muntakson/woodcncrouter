@@ -43,6 +43,12 @@ final class LibLink implements SerialLink {
     }
 
     @Override
+    public void setDtrRts(boolean dtr, boolean rts) throws IOException {
+        port.setDTR(dtr);
+        port.setRTS(rts);
+    }
+
+    @Override
     public void write(byte[] data, int timeoutMs) throws IOException {
         port.write(data, timeoutMs);
     }

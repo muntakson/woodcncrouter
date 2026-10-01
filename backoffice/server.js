@@ -19,6 +19,7 @@ const INGEST_KEY = process.env.INGEST_KEY;
 const APK_DIR = path.join(__dirname, 'apk');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const GCODE_DIR = path.join(__dirname, 'gcode');
+const FIRMWARE_DIR = path.join(__dirname, 'firmware');
 const MAX_LOG_ROWS = 200000;
 
 // ---------------------------------------------------------------- db
@@ -171,6 +172,20 @@ async function handle(req, res) {
   if (p === '/health') return send(res, 200, { ok: true });
 
   // G-code files for the tablet (download in the browser, then Open in Grbl Sender)
+  // Arduino firmware catalogue (newest first) and downloads, for the app's firmware updater
+  if (isGet && p === '/api/firmware') {
+    const file = path.join(FIRMWARE_DIR, 'firmware.json');
+    const list = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
+    return send(res, 200, list.sort((a, b) => b.published - a.published).map((f) => ({ ...f, url: `/firmware/${f.file}` })));
+  }
+  if (isGet && /^\/firmware\/[\w.\-]+\.hex$/.test(p)) {
+    const name = path.basename(p);
+    return serveFile(res, path.join(FIRMWARE_DIR, name), {
+      'Content-Type': 'text/plain; charset=us-ascii',
+      'Content-Disposition': `attachment; filename="${name}"`,
+    });
+  }
+
   if (isGet && p === '/api/gcode') {
     const files = fs.existsSync(GCODE_DIR) ? fs.readdirSync(GCODE_DIR).filter((f) => /\.(nc|gcode|ngc|tap)$/i.test(f)).sort() : [];
     return send(res, 200, files.map((f) => {

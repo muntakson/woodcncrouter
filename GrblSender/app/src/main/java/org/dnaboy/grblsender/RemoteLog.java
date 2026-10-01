@@ -170,7 +170,8 @@ public final class RemoteLog {
         return readResponse(c);
     }
 
-    private static String get(String path) throws Exception {
+    /** GET {@code path} on the backoffice server (call off the UI thread). */
+    static String get(String path) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(BuildConfig.LOG_SERVER + path).openConnection();
         c.setConnectTimeout(5000);
         c.setReadTimeout(10000);

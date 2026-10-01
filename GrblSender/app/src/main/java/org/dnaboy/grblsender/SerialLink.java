@@ -11,5 +11,8 @@ interface SerialLink {
 
     void write(byte[] data, int timeoutMs) throws IOException;
 
+    /** Drive the modem control lines. On an Arduino, DTR going active pulses the reset pin. */
+    void setDtrRts(boolean dtr, boolean rts) throws IOException;
+
     void close();
 }

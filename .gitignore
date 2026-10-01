@@ -18,3 +18,4 @@ GrblSender/local.properties
 # Python
 cam/.venv/
 __pycache__/
+backoffice/firmware/

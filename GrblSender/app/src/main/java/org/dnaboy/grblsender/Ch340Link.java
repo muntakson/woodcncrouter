@@ -191,6 +191,13 @@ final class Ch340Link implements SerialLink {
     }
 
     @Override
+    public void setDtrRts(boolean dtr, boolean rts) throws IOException {
+        int bits = (dtr ? MCR_DTR : 0) | (rts ? MCR_RTS : 0);
+        int r = conn.controlTransfer(REQTYPE_OUT, REQ_MODEM_CTRL, ~bits & 0xFF, 0, null, 0, CTRL_TIMEOUT);
+        if (r < 0) throw new IOException("MODEM_CTRL failed");
+    }
+
+    @Override
     public void write(byte[] data, int timeoutMs) throws IOException {
         int off = 0;
         while (off < data.length) {

@@ -64,6 +64,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private static final String ACTION_USB_PERMISSION = "org.dnaboy.grblsender.USB_PERMISSION";
     private static final int REQ_OPEN_FILE = 1;
     private static final int REQ_SAVE_AS = 2;
+    private static final int REQ_FIRMWARE = 4;
+    private static final int FLASH_LIMIT = 30720;    // 32 KB minus the 2 KB Pro Mini bootloader
     private static final int RX_BUFFER = 127;        // Grbl serial RX buffer is 128 bytes
     private static final int STATUS_POLL_MS = 250;
     private static final int MAX_LOG_CHARS = 20000;
@@ -1190,6 +1192,12 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
         if (requestCode == REQ_OPEN_FILE) {
             loadDocument(uri, true);
+        } else if (requestCode == REQ_FIRMWARE) {
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                confirmFlash(readAll(in), displayName(uri), "from the tablet's storage");
+            } catch (Exception e) {
+                log("Could not read firmware file: " + e.getMessage());
+            }
         } else if (requestCode == REQ_SAVE_AS) {
             if (writeDocument(uri)) {
                 docUri = uri;
@@ -1223,11 +1231,170 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     // ---------------------------------------------------------------- UI
 
+    // ---------------------------------------------------------------- Firmware update
+
+    private void showFirmwareMenu() {
+        if (streaming) { log("Stop the running job before updating the firmware"); return; }
+        if (port == null || pendingDriver == null) {
+            new AlertDialog.Builder(this).setTitle("Update firmware")
+                    .setMessage("Connect to the Arduino first, so the app knows which USB device to flash.")
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        log("Fetching the firmware list…");
+        worker.execute(() -> {
+            org.json.JSONArray list;
+            try {
+                list = new org.json.JSONArray(RemoteLog.get("/api/firmware"));
+            } catch (Exception e) {
+                list = new org.json.JSONArray();
+                ui.post(() -> log("Firmware list unavailable (" + e.getMessage() + ") – you can still pick a .hex file"));
+            }
+            final org.json.JSONArray fl = list;
+            ui.post(() -> {
+                String[] items = new String[fl.length() + 1];
+                for (int i = 0; i < fl.length(); i++) {
+                    org.json.JSONObject f = fl.optJSONObject(i);
+                    items[i] = (i == 0 ? "★ " : "") + f.optString("name") + "\n" + f.optString("version") + " · "
+                            + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new java.util.Date(f.optLong("published")));
+                }
+                items[fl.length()] = "Choose a .hex file on the tablet…";
+                new AlertDialog.Builder(this)
+                        .setTitle("Update Arduino firmware")
+                        .setItems(items, (d, which) -> {
+                            if (which == fl.length()) {
+                                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                                intent.setType("*/*");
+                                startActivityForResult(intent, REQ_FIRMWARE);
+                            } else {
+                                downloadFirmware(fl.optJSONObject(which));
+                            }
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            });
+        });
+    }
+
+    private void downloadFirmware(org.json.JSONObject f) {
+        log("Downloading " + f.optString("file") + "…");
+        worker.execute(() -> {
+            try {
+                String hex = RemoteLog.get(f.optString("url"));
+                String sha = sha256(hex.getBytes(StandardCharsets.US_ASCII));
+                if (!f.optString("sha256").isEmpty() && !f.optString("sha256").equalsIgnoreCase(sha)) {
+                    throw new Exception("checksum mismatch – download corrupted");
+                }
+                ui.post(() -> confirmFlash(hex, f.optString("name"), f.optString("version")
+                        + (f.optString("notes").isEmpty() ? "" : "\n" + f.optString("notes"))));
+            } catch (Exception e) {
+                ui.post(() -> log("Firmware download failed: " + e.getMessage()));
+            }
+        });
+    }
+
+    private static String sha256(byte[] data) throws Exception {
+        byte[] d = java.security.MessageDigest.getInstance("SHA-256").digest(data);
+        StringBuilder b = new StringBuilder();
+        for (byte x : d) b.append(String.format("%02x", x));
+        return b.toString();
+    }
+
+    private void confirmFlash(String hex, String name, String details) {
+        IntelHex.Image img;
+        try {
+            img = IntelHex.parse(hex, FLASH_LIMIT);
+        } catch (Exception e) {
+            new AlertDialog.Builder(this).setTitle("Not a usable firmware file")
+                    .setMessage(name + "\n\n" + e.getMessage()).setPositiveButton("OK", null).show();
+            return;
+        }
+        String msg = name + "\n" + details + "\n\n"
+                + String.format(Locale.US, "%d bytes (%.0f%% of the %d bytes available)\n\n", img.size,
+                100.0 * img.size / FLASH_LIMIT, FLASH_LIMIT)
+                + "The app will disconnect, reset the Arduino into its bootloader and write + verify the "
+                + "firmware. Grbl $ settings (EEPROM) are kept.\n\n"
+                + "Only install firmware built for this board (ATmega328P, 8 MHz). The spindle will be off.";
+        new AlertDialog.Builder(this)
+                .setTitle("Flash firmware?")
+                .setMessage(msg)
+                .setPositiveButton("Flash", (d, w) -> startFlash(img, name))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void startFlash(IntelHex.Image img, String name) {
+        if (streaming || pendingDriver == null) return;
+        final UsbSerialDriver driver = pendingDriver;
+        final UsbDevice device = driver.getDevice();
+        RemoteLog.i("flash", "start: " + name + " (" + img.size + " bytes)");
+        disconnect();
+
+        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+        box.setPadding(pad, pad, pad, pad / 2);
+        TextView status = new TextView(this);
+        status.setText("Preparing…");
+        ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(1000);
+        box.addView(status);
+        box.addView(bar);
+        AlertDialog dlg = new AlertDialog.Builder(this).setTitle("Flashing " + name)
+                .setView(box).setCancelable(false).show();
+
+        new Thread(() -> {
+            String result;
+            boolean ok = false;
+            SerialLink link = null;
+            try {
+                Thread.sleep(800);                       // let the Grbl connection finish closing
+                UsbDeviceConnection conn = usbManager.openDevice(device);
+                if (conn == null) throw new java.io.IOException("could not open the USB device");
+                Stk500Flasher flasher = new Stk500Flasher();
+                link = device.getVendorId() == 0x1A86
+                        ? Ch340Link.open(conn, device, Stk500Flasher.BOOTLOADER_BAUD, flasher)
+                        : LibLink.open(driver, conn, Stk500Flasher.BOOTLOADER_BAUD, flasher);
+                flasher.flash(link, img.data, img.size, new Stk500Flasher.Progress() {
+                    @Override public void status(String m) { ui.post(() -> status.setText(m)); }
+                    @Override public void progress(int done, int total) {
+                        ui.post(() -> bar.setProgress((int) (1000L * done / total)));
+                    }
+                });
+                ok = true;
+                result = "Firmware installed and verified: " + name + " (" + img.size + " bytes)";
+                RemoteLog.i("flash", result);
+            } catch (Exception e) {
+                result = "Firmware update failed: " + e.getMessage();
+                RemoteLog.e("flash", result, e);
+            } finally {
+                if (link != null) link.close();
+            }
+            final String r = result;
+            final boolean success = ok;
+            ui.post(() -> {
+                dlg.dismiss();
+                log(r);
+                new AlertDialog.Builder(this)
+                        .setTitle(success ? "✔ Firmware updated" : "✖ Firmware update failed")
+                        .setMessage(r + (success
+                                ? "\n\nReconnecting – check that the Grbl banner appears in the Console."
+                                : "\n\nThe bootloader is untouched, so you can simply try again. Reconnecting…"))
+                        .setPositiveButton("OK", null).show();
+                showConsole(true);
+                ui.postDelayed(() -> connect(driver), 1500);   // Grbl starts after the bootloader times out
+            });
+        }, "flash").start();
+    }
+
     private void showMenu(View anchor) {
         android.widget.PopupMenu m = new android.widget.PopupMenu(this, anchor);
-        m.getMenu().add(0, 1, 0, "About");
+        m.getMenu().add(0, 2, 0, "Update firmware…");
+        m.getMenu().add(0, 1, 1, "About");
         m.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == 1) showAbout();
+            if (item.getItemId() == 2) showFirmwareMenu();
             return true;
         });
         m.show();
