@@ -458,7 +458,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }, 4000);
         ui.postDelayed(statusPoll, 1500);
         // learn the rapid rate for time estimates
-        ui.postDelayed(() -> { if (port == link) queueSilent("$$"); }, 2000);
+        ui.postDelayed(() -> { if (port == link) { queueSilent("$$"); queueSilent("$I"); } }, 2000);
         updateButtons();
     }
 
@@ -575,6 +575,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 finishRun(false);
             }
             resetStreamState();
+        }
+        if (line.startsWith("[VER:") || line.startsWith("[OPT:")) {
+            String v = line.substring(5, line.length() - (line.endsWith("]") ? 1 : 0));
+            if (line.startsWith("[VER:")) fwVersion = v.endsWith(":") ? v.substring(0, v.length() - 1) : v;
+            else fwOptions = v;
+            updateInstalledText();
+            if (silentAcks > 0) return;
         }
         if (silentAcks > 0 && line.startsWith("$")) return;
         log("<< " + line);
@@ -1231,65 +1238,224 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     // ---------------------------------------------------------------- UI
 
-    // ---------------------------------------------------------------- Firmware update
+    // ---------------------------------------------------------------- Firmware update page
 
+    private String fwVersion, fwOptions;          // from Grbl's $I report
+    private android.app.Dialog fwDialog;
+    private TextView fwInstalled, fwStatus;
+    private ProgressBar fwBar;
+    private android.widget.ListView fwList;
+    private Button fwFlashBtn, fwRefreshBtn, fwFileBtn, fwCloseBtn;
+    private final List<org.json.JSONObject> fwItems = new ArrayList<>();
+    private int fwSelected = -1;
+    private boolean fwBusy;
+
+    /** Full-screen page: installed firmware, list of builds on the backoffice, download + flash with progress. */
     private void showFirmwareMenu() {
         if (streaming) { log("Stop the running job before updating the firmware"); return; }
-        if (port == null || pendingDriver == null) {
-            new AlertDialog.Builder(this).setTitle("Update firmware")
-                    .setMessage("Connect to the Arduino first, so the app knows which USB device to flash.")
-                    .setPositiveButton("OK", null).show();
-            return;
-        }
-        log("Fetching the firmware list…");
-        worker.execute(() -> {
-            org.json.JSONArray list;
-            try {
-                list = new org.json.JSONArray(RemoteLog.get("/api/firmware"));
-            } catch (Exception e) {
-                list = new org.json.JSONArray();
-                ui.post(() -> log("Firmware list unavailable (" + e.getMessage() + ") – you can still pick a .hex file"));
-            }
-            final org.json.JSONArray fl = list;
-            ui.post(() -> {
-                String[] items = new String[fl.length() + 1];
-                for (int i = 0; i < fl.length(); i++) {
-                    org.json.JSONObject f = fl.optJSONObject(i);
-                    items[i] = (i == 0 ? "★ " : "") + f.optString("name") + "\n" + f.optString("version") + " · "
-                            + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new java.util.Date(f.optLong("published")));
+        float dp = getResources().getDisplayMetrics().density;
+        int pad = (int) (16 * dp);
+        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
+        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+        root.setPadding(pad, pad, pad, pad);
+        root.setBackgroundColor(0xFF1D2024);
+
+        TextView title = new TextView(this);
+        title.setText("Arduino firmware");
+        title.setTextSize(22);
+        title.setTextColor(0xFFE3E6EA);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        root.addView(title);
+
+        fwInstalled = new TextView(this);
+        fwInstalled.setTextColor(0xFFB8E0B8);
+        fwInstalled.setPadding(0, (int) (6 * dp), 0, (int) (10 * dp));
+        root.addView(fwInstalled);
+        updateInstalledText();
+
+        TextView hdr = new TextView(this);
+        hdr.setText("Available on the backoffice (" + BuildConfig.LOG_SERVER + ")");
+        hdr.setTextColor(0xFF8B939C);
+        root.addView(hdr);
+
+        fwList = new android.widget.ListView(this);
+        fwList.setChoiceMode(android.widget.ListView.CHOICE_MODE_SINGLE);
+        fwList.setBackgroundColor(0xFF111316);
+        fwList.setDividerHeight((int) dp);
+        root.addView(fwList, new android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        fwList.setAdapter(new android.widget.BaseAdapter() {
+            @Override public int getCount() { return fwItems.size(); }
+            @Override public Object getItem(int i) { return fwItems.get(i); }
+            @Override public long getItemId(int i) { return i; }
+            @Override public View getView(int i, View convert, android.view.ViewGroup parent) {
+                android.widget.LinearLayout row = (android.widget.LinearLayout) convert;
+                if (row == null) {
+                    row = new android.widget.LinearLayout(MainActivity.this);
+                    row.setOrientation(android.widget.LinearLayout.VERTICAL);
+                    row.setPadding(pad, pad / 2, pad, pad / 2);
+                    TextView name = new TextView(MainActivity.this);
+                    name.setTextSize(16);
+                    name.setTypeface(null, android.graphics.Typeface.BOLD);
+                    TextView meta = new TextView(MainActivity.this);
+                    meta.setTextColor(0xFF8B939C);
+                    row.addView(name);
+                    row.addView(meta);
                 }
-                items[fl.length()] = "Choose a .hex file on the tablet…";
-                new AlertDialog.Builder(this)
-                        .setTitle("Update Arduino firmware")
-                        .setItems(items, (d, which) -> {
-                            if (which == fl.length()) {
-                                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                                intent.setType("*/*");
-                                startActivityForResult(intent, REQ_FIRMWARE);
-                            } else {
-                                downloadFirmware(fl.optJSONObject(which));
-                            }
-                        })
-                        .setNegativeButton("Cancel", null)
-                        .show();
+                org.json.JSONObject f = fwItems.get(i);
+                boolean sel = i == fwSelected;
+                row.setBackgroundColor(sel ? 0xFF24476E : 0x00000000);
+                TextView name = (TextView) row.getChildAt(0);
+                name.setTextColor(sel ? 0xFFFFFFFF : 0xFFE3E6EA);
+                name.setText((sel ? "● " : "○ ") + (i == 0 ? "★ " : "") + f.optString("name"));
+                ((TextView) row.getChildAt(1)).setText(String.format(Locale.US, "%s · %.1f KB · %s%s",
+                        f.optString("version"), f.optLong("size") / 1024.0,
+                        new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new java.util.Date(f.optLong("published"))),
+                        f.optString("notes").isEmpty() ? "" : "\n" + f.optString("notes")));
+                return row;
+            }
+        });
+        fwList.setOnItemClickListener((parent, v, pos, id) -> {
+            if (fwBusy) return;
+            fwSelected = pos;
+            ((android.widget.BaseAdapter) fwList.getAdapter()).notifyDataSetChanged();
+            updateFirmwareButtons();
+        });
+
+        fwStatus = new TextView(this);
+        fwStatus.setTextColor(0xFFE3E6EA);
+        fwStatus.setPadding(0, (int) (10 * dp), 0, (int) (4 * dp));
+        root.addView(fwStatus);
+        fwBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        fwBar.setMax(1000);
+        fwBar.setVisibility(View.INVISIBLE);
+        root.addView(fwBar);
+
+        android.widget.LinearLayout buttons = new android.widget.LinearLayout(this);
+        buttons.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        fwRefreshBtn = new Button(this);
+        fwRefreshBtn.setText("Refresh");
+        fwFileBtn = new Button(this);
+        fwFileBtn.setText("From file…");
+        fwCloseBtn = new Button(this);
+        fwCloseBtn.setText("Close");
+        fwFlashBtn = new Button(this);
+        fwFlashBtn.setText("⬇ Download & Flash");
+        fwFlashBtn.setTextColor(0xFF4CD07D);
+        for (Button b : new Button[]{fwRefreshBtn, fwFileBtn, fwCloseBtn, fwFlashBtn}) {
+            b.setAllCaps(false);
+            buttons.addView(b, new android.widget.LinearLayout.LayoutParams(0,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, b == fwFlashBtn ? 1.6f : 1f));
+        }
+        root.addView(buttons);
+
+        fwRefreshBtn.setOnClickListener(v -> loadFirmwareList());
+        fwFileBtn.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            startActivityForResult(intent, REQ_FIRMWARE);
+        });
+        fwCloseBtn.setOnClickListener(v -> { if (!fwBusy) fwDialog.dismiss(); });
+        fwFlashBtn.setOnClickListener(v -> {
+            if (fwSelected >= 0 && fwSelected < fwItems.size()) downloadFirmware(fwItems.get(fwSelected));
+        });
+
+        fwDialog = new android.app.Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
+        fwDialog.setContentView(root);
+        fwDialog.setOnKeyListener((d, key, ev) -> key == KeyEvent.KEYCODE_BACK && fwBusy);   // no Back while flashing
+        fwDialog.setOnDismissListener(d -> fwDialog = null);
+        fwDialog.show();
+
+        if (port != null) queueSilent("$I");            // refresh the "installed" line
+        loadFirmwareList();
+    }
+
+    private void updateInstalledText() {
+        if (fwInstalled == null) return;
+        String board = pendingDriver != null ? describe(pendingDriver) : "no board connected";
+        if (port == null) {
+            fwInstalled.setText("Installed: unknown – connect to the Arduino to read it (" + board + ")");
+        } else if (fwVersion == null) {
+            fwInstalled.setText("Installed: reading… (" + board + ")");
+        } else {
+            String opt = fwOptions != null ? fwOptions : "";
+            String flags = opt.contains(",") ? opt.substring(0, opt.indexOf(',')) : opt;
+            fwInstalled.setText("Installed: Grbl " + fwVersion + " · options " + flags
+                    + (flags.contains("D") ? " (D13 = spindle enable)" : " (no spindle-enable pin)")
+                    + "\nBoard: " + board);
+        }
+    }
+
+    private void updateFirmwareButtons() {
+        if (fwDialog == null) return;
+        boolean canFlash = !fwBusy && !streaming && pendingDriver != null;
+        fwFlashBtn.setEnabled(canFlash && fwSelected >= 0);
+        fwFileBtn.setEnabled(canFlash);
+        fwRefreshBtn.setEnabled(!fwBusy);
+        fwCloseBtn.setEnabled(!fwBusy);
+        fwList.setEnabled(!fwBusy);
+        if (!fwBusy && pendingDriver == null) fwStatus.setText("Connect to the Arduino first – flashing needs its USB device.");
+    }
+
+    private void loadFirmwareList() {
+        fwStatus.setText("Loading the firmware list…");
+        fwRefreshBtn.setEnabled(false);
+        worker.execute(() -> {
+            List<org.json.JSONObject> items = new ArrayList<>();
+            String err = null;
+            try {
+                org.json.JSONArray a = new org.json.JSONArray(RemoteLog.get("/api/firmware"));
+                for (int i = 0; i < a.length(); i++) items.add(a.getJSONObject(i));
+            } catch (Exception e) {
+                err = e.getMessage();
+            }
+            final String error = err;
+            ui.post(() -> {
+                if (fwDialog == null) return;
+                fwItems.clear();
+                fwItems.addAll(items);
+                fwSelected = items.isEmpty() ? -1 : 0;     // preselect the newest build
+                ((android.widget.BaseAdapter) fwList.getAdapter()).notifyDataSetChanged();
+                fwStatus.setText(error != null ? "Could not load the list: " + error + " – use \"From file…\" instead"
+                        : items.isEmpty() ? "No firmware published on the backoffice."
+                        : items.size() + " firmware build(s) available. Select one and tap Download & Flash.");
+                updateFirmwareButtons();
             });
         });
     }
 
     private void downloadFirmware(org.json.JSONObject f) {
-        log("Downloading " + f.optString("file") + "…");
+        fwBusy = true;
+        updateFirmwareButtons();
+        fwStatus.setText("Downloading " + f.optString("file") + "…");
+        fwBar.setVisibility(View.VISIBLE);
+        fwBar.setIndeterminate(true);
         worker.execute(() -> {
             try {
                 String hex = RemoteLog.get(f.optString("url"));
                 String sha = sha256(hex.getBytes(StandardCharsets.US_ASCII));
                 if (!f.optString("sha256").isEmpty() && !f.optString("sha256").equalsIgnoreCase(sha)) {
-                    throw new Exception("checksum mismatch – download corrupted");
+                    throw new Exception("checksum mismatch – the download is corrupted");
                 }
-                ui.post(() -> confirmFlash(hex, f.optString("name"), f.optString("version")
-                        + (f.optString("notes").isEmpty() ? "" : "\n" + f.optString("notes"))));
+                ui.post(() -> {
+                    fwBusy = false;
+                    fwBar.setIndeterminate(false);
+                    fwBar.setProgress(0);
+                    fwStatus.setText("Downloaded, SHA-256 OK.");
+                    updateFirmwareButtons();
+                    confirmFlash(hex, f.optString("name"), f.optString("version")
+                            + (f.optString("notes").isEmpty() ? "" : "\n" + f.optString("notes")));
+                });
             } catch (Exception e) {
-                ui.post(() -> log("Firmware download failed: " + e.getMessage()));
+                ui.post(() -> {
+                    fwBusy = false;
+                    fwBar.setIndeterminate(false);
+                    fwBar.setVisibility(View.INVISIBLE);
+                    fwStatus.setText("Download failed: " + e.getMessage());
+                    updateFirmwareButtons();
+                    log("Firmware download failed: " + e.getMessage());
+                });
             }
         });
     }
@@ -1306,6 +1472,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         try {
             img = IntelHex.parse(hex, FLASH_LIMIT);
         } catch (Exception e) {
+            if (fwStatus != null) fwStatus.setText("Not a usable firmware file: " + e.getMessage());
             new AlertDialog.Builder(this).setTitle("Not a usable firmware file")
                     .setMessage(name + "\n\n" + e.getMessage()).setPositiveButton("OK", null).show();
             return;
@@ -1330,19 +1497,35 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         final UsbDevice device = driver.getDevice();
         RemoteLog.i("flash", "start: " + name + " (" + img.size + " bytes)");
         disconnect();
+        fwVersion = null;
+        fwOptions = null;
 
-        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
-        box.setOrientation(android.widget.LinearLayout.VERTICAL);
-        int pad = (int) (20 * getResources().getDisplayMetrics().density);
-        box.setPadding(pad, pad, pad, pad / 2);
-        TextView status = new TextView(this);
+        // progress goes to the firmware page, or to a small dialog when started without it
+        final AlertDialog small;
+        final TextView status;
+        final ProgressBar bar;
+        if (fwDialog != null) {
+            small = null;
+            status = fwStatus;
+            bar = fwBar;
+            fwBusy = true;
+            updateFirmwareButtons();
+        } else {
+            android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+            box.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int pad = (int) (20 * getResources().getDisplayMetrics().density);
+            box.setPadding(pad, pad, pad, pad / 2);
+            status = new TextView(this);
+            bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+            bar.setMax(1000);
+            box.addView(status);
+            box.addView(bar);
+            small = new AlertDialog.Builder(this).setTitle("Flashing " + name).setView(box).setCancelable(false).show();
+        }
         status.setText("Preparing…");
-        ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        bar.setMax(1000);
-        box.addView(status);
-        box.addView(bar);
-        AlertDialog dlg = new AlertDialog.Builder(this).setTitle("Flashing " + name)
-                .setView(box).setCancelable(false).show();
+        bar.setVisibility(View.VISIBLE);
+        bar.setIndeterminate(false);
+        bar.setProgress(0);
 
         new Thread(() -> {
             String result;
@@ -1374,15 +1557,21 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             final String r = result;
             final boolean success = ok;
             ui.post(() -> {
-                dlg.dismiss();
                 log(r);
-                new AlertDialog.Builder(this)
-                        .setTitle(success ? "✔ Firmware updated" : "✖ Firmware update failed")
-                        .setMessage(r + (success
-                                ? "\n\nReconnecting – check that the Grbl banner appears in the Console."
-                                : "\n\nThe bootloader is untouched, so you can simply try again. Reconnecting…"))
-                        .setPositiveButton("OK", null).show();
-                showConsole(true);
+                if (small != null) {
+                    small.dismiss();
+                    new AlertDialog.Builder(this)
+                            .setTitle(success ? "✔ Firmware updated" : "✖ Firmware update failed")
+                            .setMessage(r + (success ? "\n\nReconnecting…"
+                                    : "\n\nThe bootloader is untouched, so you can simply try again. Reconnecting…"))
+                            .setPositiveButton("OK", null).show();
+                } else {
+                    fwBusy = false;
+                    status.setText((success ? "✔ " : "✖ ") + r + (success ? "\nReconnecting to Grbl…"
+                            : "\nThe bootloader is untouched – you can try again."));
+                    updateFirmwareButtons();
+                    updateInstalledText();
+                }
                 ui.postDelayed(() -> connect(driver), 1500);   // Grbl starts after the bootloader times out
             });
         }, "flash").start();
