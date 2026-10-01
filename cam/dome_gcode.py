@@ -244,8 +244,7 @@ while remaining:
 
 g(f"G0 Z{f3(args.safe)}")
 g("G0 X0 Y0")
-g("(PAUSE - switch the router OFF)")
-g("M0")
+g("(END - switch the router OFF)")
 g("M2")
 g("%")
 

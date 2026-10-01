@@ -614,6 +614,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
         preview.setTool(w[0], w[1], w[2]);
         if (streaming) {
+            checkProgramPause();
             trackExecution();
         } else if (machineState.equals("Idle") && (moved || !prevState.equals("Idle")) && previewIsRelative()) {
             // relative (G91) programs are drawn from the current position, so follow it while idle
@@ -848,6 +849,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         preview.setRunning(false);
         if (!wasRunning) { updateButtons(); return; }
         ui.removeCallbacks(runWatch);
+        clearPause();
         streaming = true;                     // heartbeat() reads run state
         RemoteLog.i("run", "final: " + heartbeat());
         streaming = false;
@@ -863,9 +865,70 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     program.size(), errorCount, hms(sec));
             log(m);
             txtJob.setText(m.replace("Run finished: ", "Done · "));
-            JobService.stop(this, m);
+            JobService.stop(this, m + " – switch the spindle off if it is manual");
         }
         updateButtons();
+    }
+
+    // ---------------------------------------------------------------- M0 / M1 program pause
+
+    private static final java.util.regex.Pattern M0_WORD = java.util.regex.Pattern.compile("M0*[01](?![0-9])");
+    private int pauseLine = -1;               // program line of the M0 we are alerting about
+    private AlertDialog pauseDialog;
+
+    /**
+     * Grbl acknowledges an M0/M1 line only after Resume, so "Hold" while the next
+     * unacknowledged line is M0/M1 means the program itself paused (not the Hold button).
+     */
+    private void checkProgramPause() {
+        boolean held = machineState.startsWith("Hold");
+        int idx = ackedLines;
+        boolean atPause = held && idx < program.size() && M0_WORD.matcher(program.get(idx).text).find();
+        if (atPause && pauseLine != idx) {
+            pauseLine = idx;
+            String why = pauseComment(program.get(idx).editorLine);
+            String msg = (why.isEmpty() ? "The program paused (M0)." : why)
+                    + "\n\nLine " + (program.get(idx).editorLine + 1) + ": " + program.get(idx).text;
+            log("Program paused at line " + (program.get(idx).editorLine + 1) + (why.isEmpty() ? "" : ": " + why));
+            RemoteLog.w("run", "M0 pause at line " + (idx + 1) + "/" + program.size() + (why.isEmpty() ? "" : " – " + why));
+            JobService.pauseAlert(this, why.isEmpty() ? "Program paused (M0) – press Resume" : why);
+            if (pauseDialog != null) pauseDialog.dismiss();
+            pauseDialog = new AlertDialog.Builder(this)
+                    .setTitle("⏸ Program paused")
+                    .setMessage(msg)
+                    .setCancelable(false)
+                    .setPositiveButton("▶ Resume", (d, w) -> writeRaw(new byte[]{'~'}))
+                    .setNegativeButton("■ Stop", (d, w) -> stopJob())
+                    .setNeutralButton("Later", null)
+                    .show();
+        } else if (!held && pauseLine >= 0) {
+            clearPause();
+        }
+    }
+
+    private void clearPause() {
+        pauseLine = -1;
+        JobService.clearPauseAlert(this);
+        if (pauseDialog != null) {
+            pauseDialog.dismiss();
+            pauseDialog = null;
+        }
+    }
+
+    /** The comment on the M0 line or the comment lines just above it, e.g. "PAUSE - switch the router ON". */
+    private String pauseComment(int editorLine) {
+        String[] rows = docText().split("\n", -1);
+        StringBuilder b = new StringBuilder();
+        for (int i = editorLine; i >= 0 && i >= editorLine - 3 && i < rows.length; i--) {
+            String row = rows[i].trim();
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\(([^)]*)\\)|;(.*)$").matcher(row);
+            StringBuilder c = new StringBuilder();
+            while (m.find()) c.append(m.group(1) != null ? m.group(1) : m.group(2)).append(' ');
+            String code = row.replaceAll("\\([^)]*\\)", "").replaceAll(";.*$", "").trim();
+            if (i < editorLine && !code.isEmpty()) break;       // stop at the previous real command
+            if (c.length() > 0) b.insert(0, c.toString().trim() + (b.length() > 0 ? " " : ""));
+        }
+        return b.toString().trim();
     }
 
     /** Work out which program line the machine is executing from its live position. */

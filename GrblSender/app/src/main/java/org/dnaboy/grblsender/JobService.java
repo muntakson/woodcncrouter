@@ -25,6 +25,8 @@ public class JobService extends Service {
     private static final String CHANNEL_DONE = "done";
     private static final int ID_RUN = 1;
     private static final int ID_DONE = 2;
+    private static final int ID_PAUSE = 3;
+    private static final String CHANNEL_PAUSE = "pause";
     private static final String EXTRA_TITLE = "title";
 
     private static long lastUpdateMs;
@@ -59,6 +61,15 @@ public class JobService extends Service {
         if (finalText != null) {
             notifyManager(ctx).notify(ID_DONE, build(ctx, CHANNEL_DONE, title, finalText, -1, false));
         }
+    }
+
+    /** Loud notification: the program stopped at M0/M1 and needs the operator. */
+    static void pauseAlert(Context ctx, String text) {
+        notifyManager(ctx).notify(ID_PAUSE, build(ctx, CHANNEL_PAUSE, "Program paused – action needed", text, -1, false));
+    }
+
+    static void clearPauseAlert(Context ctx) {
+        notifyManager(ctx).cancel(ID_PAUSE);
     }
 
     // ---------------------------------------------------------------- Service
@@ -109,6 +120,9 @@ public class JobService extends Service {
             NotificationChannel done = new NotificationChannel(CHANNEL_DONE, "Job finished", NotificationManager.IMPORTANCE_HIGH);
             done.setDescription("Shown when a job finishes or stops");
             nm.createNotificationChannel(done);
+            NotificationChannel pause = new NotificationChannel(CHANNEL_PAUSE, "Program pause (M0)", NotificationManager.IMPORTANCE_HIGH);
+            pause.setDescription("The program stopped at M0/M1 and waits for Resume");
+            nm.createNotificationChannel(pause);
         }
         return nm;
     }

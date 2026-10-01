@@ -6223,7 +6223,6 @@ G3 X416.035 Y499.298 I-18.754 J13.408
 G0 Z5
 G0 Z5
 G0 X0 Y0
-(PAUSE - switch the router OFF)
-M0
+(END - switch the router OFF)
 M2
 %
