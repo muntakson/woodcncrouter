@@ -2,6 +2,9 @@
 
 Work origin: X0 Y0 = lower-left corner of the sheet stack (the DXF origin),
              Z0    = TOP of the stack.
+Spindle: by default the MK300 VFD is switched by M3/M5 (Grbl built with
+USE_SPINDLE_DIR_AS_ENABLE_PIN: D13 -> optocoupler -> X1/COM); --spindle manual
+restores the M0 pauses for a hand-switched router.
 Strategy per part (nearest-neighbour order to cut travel):
   1. holes, peck-drilled with the endmill (hole = tool diameter)
   2. outside profile, offset by the tool radius, conventional milling (CCW),
@@ -27,6 +30,10 @@ p.add_argument("--feed", type=float, default=800, help="cutting feed mm/min")
 p.add_argument("--plunge", type=float, default=500, help="plunge feed mm/min (Grbl caps it at $112)")
 p.add_argument("--peck", type=float, default=6.0, help="retract to clear chips every N mm of hole depth")
 p.add_argument("--safe", type=float, default=5.0, help="safe Z above the stack mm")
+p.add_argument("--spindle", choices=["vfd", "manual"], default="vfd",
+               help="vfd: M3/M5 switch the MK300 via Grbl's spindle-enable pin (D13); manual: M0 pauses to switch by hand")
+p.add_argument("--rpm", type=float, default=20000, help="spindle speed word for M3 (keep Grbl $30 equal to it)")
+p.add_argument("--spinup", type=float, default=10.0, help="dwell after M3 so the spindle reaches speed, s")
 args = p.parse_args()
 
 R = args.tool / 2
@@ -218,11 +225,21 @@ g(f"(Stock: stack {args.stock:g} mm thick = 6 x 5 mm plywood, cut {args.through:
 g(f"(Passes: {NPASS} x {STEP:.3f} mm. Feed {args.feed:.0f}, plunge {args.plunge:.0f} mm/min. No tabs.)")
 g(f"(Holes: peck-drilled D={args.tool:g} mm with the endmill, {args.peck:g} mm pecks at F{args.plunge:.0f})")
 g("(ORIGIN: X0 Y0 = lower-left corner of the sheet stack, Z0 = TOP of the stack)")
-g("(Keep screws/clamps away from all cut paths. Spindle is MANUAL.)")
+g("(Keep screws/clamps away from all cut paths.)")
+if args.spindle == "vfd":
+    g(f"(Spindle: M3 S{args.rpm:.0f} runs the MK300 via Grbl D13 -> X1, M5 stops it; {args.spinup:g} s spin-up dwell)")
+else:
+    g("(Spindle is MANUAL.)")
 g("G21 G90 G17 G94")
 g(f"G0 Z{f3(args.safe)}")
-g("(PAUSE - switch the router ON, then press Resume)")
-g("M0")
+if args.spindle == "vfd":
+    g("(PAUSE - check the stack is clamped and Z0 is set, then press Resume to start the spindle)")
+    g("M0")
+    g(f"M3 S{args.rpm:.0f} (spindle ON)")
+    g(f"G4 P{args.spinup:g} (wait for the spindle to reach speed)")
+else:
+    g("(PAUSE - switch the router ON, then press Resume)")
+    g("M0")
 
 remaining = parts[:]
 here = (0.0, 0.0)
@@ -242,9 +259,12 @@ while remaining:
     cut_profile(profile_path(part))
     here = tuple(pos[:2])
 
-g(f"G0 Z{f3(args.safe)}")
+rapid_z(args.safe)
+if args.spindle == "vfd":
+    g("M5 (spindle OFF)")
 g("G0 X0 Y0")
-g("(END - switch the router OFF)")
+if args.spindle == "manual":
+    g("(END - switch the router OFF)")
 g("M2")
 g("%")
 

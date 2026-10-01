@@ -6,11 +6,14 @@
 (Passes: 4 x 7.625 mm. Feed 2000, plunge 600 mm/min. No tabs.)
 (Holes: peck-drilled D=8 mm with the endmill, 6 mm pecks at F600)
 (ORIGIN: X0 Y0 = lower-left corner of the sheet stack, Z0 = TOP of the stack)
-(Keep screws/clamps away from all cut paths. Spindle is MANUAL.)
+(Keep screws/clamps away from all cut paths.)
+(Spindle: M3 S20000 runs the MK300 via Grbl D13 -> X1, M5 stops it; 10 s spin-up dwell)
 G21 G90 G17 G94
 G0 Z5
-(PAUSE - switch the router ON, then press Resume)
+(PAUSE - check the stack is clamped and Z0 is set, then press Resume to start the spindle)
 M0
+M3 S20000 (spindle ON)
+G4 P10 (wait for the spindle to reach speed)
 (Part 1/26 - block 1, insert 0, 421 x 375 mm)
 G0 X73.301 Y47.583
 G0 Z1
@@ -6221,8 +6224,7 @@ G3 X377.047 Y405.161 I13.408 J18.754
 G1 X421.375 Y467.141
 G3 X416.035 Y499.298 I-18.754 J13.408
 G0 Z5
-G0 Z5
+M5 (spindle OFF)
 G0 X0 Y0
-(END - switch the router OFF)
 M2
 %
