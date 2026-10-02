@@ -2033,7 +2033,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 .setMessage(msg)
                 .setPositiveButton("OK", null)
                 .setNeutralButton("Check for update", (d, w) -> startActivity(
-                        new Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.LOG_SERVER + "/"))))
+                        new Intent(Intent.ACTION_VIEW, Uri.parse(RemoteLog.downloadUrl()))))
                 .show();
     }
 

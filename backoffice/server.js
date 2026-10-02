@@ -16,6 +16,8 @@ for (const line of fs.readFileSync(path.join(__dirname, '.env'), 'utf8').split('
 }
 const PORT = Number(process.env.PORT || 3077);
 const INGEST_KEY = process.env.INGEST_KEY;
+const DASH_USER = process.env.DASH_USER || 'admin';
+const DASH_PASSWORD = process.env.DASH_PASSWORD || '';
 const APK_DIR = path.join(__dirname, 'apk');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const GCODE_DIR = path.join(__dirname, 'gcode');
@@ -90,12 +92,27 @@ function safeEqual(a, b) {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
-// No sign-in: the dashboard is open to the local network only. Uses the socket
+// The dashboard is open on the local network without sign-in. Uses the socket
 // address (not X-Forwarded-For) so the check cannot be spoofed by a header.
-function isAdmin(req) {
+// Requests through the public nginx proxy (cnc.iotok.org) arrive from 127.0.0.1 but
+// always carry the X-Real-IP that nginx sets, so they must pass HTTP Basic auth
+// (DASH_USER / DASH_PASSWORD in .env) instead.
+function isLan(req) {
+  if (req.headers['x-real-ip'] !== undefined) return false;
   const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
   return ip === '127.0.0.1' || ip === '::1' || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
 }
+
+function hasDashLogin(req) {
+  if (!DASH_PASSWORD) return false;
+  const m = /^Basic\s+(.+)$/i.exec(req.headers.authorization || '');
+  if (!m) return false;
+  const cred = Buffer.from(m[1], 'base64').toString('utf8');
+  const i = cred.indexOf(':');
+  return i >= 0 && safeEqual(cred.slice(0, i), DASH_USER) && safeEqual(cred.slice(i + 1), DASH_PASSWORD);
+}
+
+function isAdmin(req) { return isLan(req) || hasDashLogin(req); }
 
 function clientIp(req) {
   return (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].replace('::ffff:', '');
@@ -218,7 +235,8 @@ async function handle(req, res) {
 
   // ---- admin (HTTP Basic auth)
   if (!isAdmin(req)) {
-    return send(res, 403, 'dashboard is available on the local network only');
+    res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Grbl Sender backoffice", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('sign in required');
   }
 
   if (req.method === 'GET' && (p === '/' || p === '/index.html')) return serveFile(res, path.join(PUBLIC_DIR, 'index.html'));
