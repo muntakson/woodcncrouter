@@ -42,6 +42,24 @@ index 0000000..3d786d5
 +	$(OBJCOPY) -O binary $< $@
 +clean:
 +	rm -rf $(BUILD)
+diff --git a/src/serial.c b/src/serial.c
+index b35e0de..af19f87 100644
+--- a/src/serial.c
++++ b/src/serial.c
+@@ -51,11 +51,11 @@ void SendthreadFunction( void *);
+ #endif
+ 
+ uint8_t serial_rx_buffer[RX_RING_BUFFER];
+-uint8_t serial_rx_buffer_head = 0;
++volatile uint8_t serial_rx_buffer_head = 0;
+ volatile uint8_t serial_rx_buffer_tail = 0;
+ 
+ uint8_t serial_tx_buffer[TX_RING_BUFFER];
+-uint8_t serial_tx_buffer_head = 0;
++volatile uint8_t serial_tx_buffer_head = 0;
+ volatile uint8_t serial_tx_buffer_tail = 0;
+ 
+ 
 diff --git a/src/system_stm32f10x.c b/src/system_stm32f10x.c
 index 826dbcd..4aaf3d3 100644
 --- a/src/system_stm32f10x.c
@@ -241,6 +259,19 @@ index 0000000..b1eb461
 +
 +  .ARM.attributes 0 : { *(.ARM.attributes) }
 +}
+diff --git a/usb/usb_endp.c b/usb/usb_endp.c
+index 18bf619..10334ba 100644
+--- a/usb/usb_endp.c
++++ b/usb/usb_endp.c
+@@ -23,7 +23,7 @@
+ uint8_t USB_Rx_Buffer[VIRTUAL_COM_PORT_DATA_SIZE];
+ 
+ extern uint8_t serial_tx_buffer[];
+-extern uint8_t serial_tx_buffer_head;
++extern volatile uint8_t serial_tx_buffer_head;
+ extern volatile uint8_t serial_tx_buffer_tail;
+ 
+ 
 diff --git a/util/stm32eeprom.h b/util/stm32eeprom.h
 index d3c7d41..2928728 100644
 --- a/util/stm32eeprom.h

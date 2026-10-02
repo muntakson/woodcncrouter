@@ -6,7 +6,7 @@ USB DFU (`1EAF:0003`, alt "0x8002000") by Grbl Sender (☰ → (B) Blue Pill fir
 
 | Build | Chip | Size | In the app |
 |---|---|---|---|
-| **`grbl-1.1f-bluepill64-maple.bin`** | **64 KB C8T6 (this machine)** | 35,492 B of 55 KB | listed (target `bluepill`) |
+| **`grbl-1.1f-bluepill64-maple.bin`** | **64 KB C8T6 (this machine)** | 35,496 B of 55 KB | listed (target `bluepill`) |
 | `grblhal-20250514-bluepill-maple-usb.bin` | 128 KB only | 120,584 B of 120,832 B | hidden (target `bluepill-128k`) |
 
 ## 1. Grbl 1.1f for 64 KB chips (in use)
@@ -14,6 +14,8 @@ USB DFU (`1EAF:0003`, alt "0x8002000") by Grbl Sender (☰ → (B) Blue Pill fir
 Source: [robomechs/6-AXIS-USBCNC-GRBL](https://github.com/robomechs/6-AXIS-USBCNC-GRBL) (Grbl 1.1f STM32F103C8 port,
 StdPeriph + ST USB-FS CDC). `grbl-1.1f-stm32-classic-maple64.patch` adds `Makefile.maple` and
 `stm32_flash_maple64.ld`, and makes `VECT_TAB_OFFSET` / `EEPROM_START_ADDRESS` overridable.
+It also marks `serial_rx_buffer_head` / `serial_tx_buffer_head` `volatile`: with `-flto` the main loop
+otherwise never sees bytes the USB interrupt adds, so Grbl answers `?` but ignores every line (`$$`, G-code).
 
 ```sh
 git clone https://github.com/robomechs/6-AXIS-USBCNC-GRBL.git grbl-stm32-classic
