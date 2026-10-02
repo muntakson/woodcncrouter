@@ -234,6 +234,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, BAUDS);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         baudSpinner.setAdapter(adapter);
+        applyBoardToUi();
 
         btnConnect.setOnClickListener(v -> { if (port == null) connect(); else disconnect(); });
 
@@ -305,7 +306,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         showConsole(false);
         updateTitle();
         updateButtons();
-        log("Grbl Sender " + BuildConfig.VERSION_NAME + " ready. Plug in the Arduino and tap Connect.");
+        log("Grbl Sender " + BuildConfig.VERSION_NAME + " ready. Board: " + boardName(board()) + " (☰ → Settings). Plug it in and tap Connect.");
         restoreDocument();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -357,9 +358,27 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     d.getProductName() != null ? d.getProductName() : ""));
             RemoteLog.d("usb", dumpDevice(d));
         }
-        List<UsbSerialDriver> drivers = serialProber().findAllDrivers(usbManager);
+        List<UsbSerialDriver> all = serialProber().findAllDrivers(usbManager);
+        String b = board();
+        List<UsbSerialDriver> mine = new ArrayList<>();
+        for (UsbSerialDriver d : all) if (driverIsBoard(d, b)) mine.add(d);
+        if (mine.isEmpty() && !all.isEmpty()) {
+            String other = BOARD_BLUEPILL.equals(b) ? BOARD_PROMINI : BOARD_BLUEPILL;
+            UsbSerialDriver d0 = all.get(0);
+            log("Settings say " + boardName(b) + ", but the USB device looks like a " + boardName(other) + " (" + describe(d0) + ")");
+            new AlertDialog.Builder(this)
+                    .setTitle("Different board plugged in")
+                    .setMessage("Settings: " + boardName(b) + "\nFound: " + describe(d0) + " – this is a " + boardName(other)
+                            + ".\n\nSwitch the controller board to " + boardName(other) + " and connect?")
+                    .setPositiveButton("Switch & connect", (dlg, w) -> { setBoard(other); connect(d0); })
+                    .setNeutralButton("Connect anyway", (dlg, w) -> connect(d0))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
+        final List<UsbSerialDriver> drivers = mine.isEmpty() ? all : mine;
         if (drivers.isEmpty() && findDfuDevice() != null) {
-            log("Blue Pill bootloader (DFU 1EAF:0003) detected – use ☰ → Blue Pill firmware, then reset with BOOT1 = 0");
+            log("Blue Pill bootloader (DFU 1EAF:0003) detected – use ☰ → Firmware update, then reset with BOOT1 = 0");
             return;
         }
         if (drivers.isEmpty()) {
@@ -435,7 +454,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             log("Could not open USB device (openDevice returned null)");
             return;
         }
-        final int baud = Integer.parseInt((String) baudSpinner.getSelectedItem());
+        final int baud = Integer.parseInt((String) baudSpinner.getSelectedItem());   // ignored by native USB (Blue Pill)
         final boolean ch340 = device.getVendorId() == 0x1A86;
         gotData = false;
         writeFailures = 0;
@@ -471,11 +490,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         fwVersion = null;
         fwOptions = null;
         if (driver.getDevice().getVendorId() == DfuFlasher.VID_ST) {
-            log("Blue Pill (grblHAL, native USB) – sending a soft reset");
+            log("Blue Pill (native USB) – sending a soft reset");
             ui.postDelayed(() -> { if (port == link) writeRaw(new byte[]{0x18}); }, 300);
         }
         ui.postDelayed(() -> {
-            if (port == link && !gotData) log("Warning: no data from Arduino yet (expected Grbl banner)");
+            if (port == link && !gotData) log("Warning: no data from the " + boardName(board()) + " yet (expected Grbl banner)");
         }, 4000);
         ui.postDelayed(statusPoll, 1500);
         // learn the rapid rate for time estimates
@@ -609,6 +628,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 }
             }
             updateInstalledText();
+            updateSettingsInfo();
             if (silentAcks > 0) return;
         }
         if (silentAcks > 0 && line.startsWith("$")) return;
@@ -1292,6 +1312,40 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private boolean fwBusy;
     /** "promini" (Arduino Pro Mini, STK500 .hex) or "bluepill" (STM32F103C8, Maple DFU .bin). */
     private String fwTarget = "promini";
+
+    // ---------------------------------------------------------------- Controller board (Settings)
+
+    static final String BOARD_PROMINI = "promini", BOARD_BLUEPILL = "bluepill";
+
+    /** The controller board chosen in Settings: decides which USB device Connect opens and which firmware is offered. */
+    private String board() { return getPreferences(MODE_PRIVATE).getString("board", BOARD_PROMINI); }
+    private boolean boardIsBlue() { return BOARD_BLUEPILL.equals(board()); }
+    private static String boardName(String b) {
+        return BOARD_BLUEPILL.equals(b) ? "Blue Pill (STM32F103C8T6)" : "Arduino Pro Mini";
+    }
+
+    private void setBoard(String b) {
+        if (b.equals(board())) return;
+        getPreferences(MODE_PRIVATE).edit().putString("board", b).apply();
+        log("Controller board set to " + boardName(b));
+        RemoteLog.i("settings", "board=" + b);
+        applyBoardToUi();
+    }
+
+    /** Pro Mini: CH340 at the chosen baud (38400 for our 8 MHz build). Blue Pill: native USB, baud is ignored. */
+    private void applyBoardToUi() {
+        if (boardIsBlue()) {
+            baudSpinner.setEnabled(false);
+        } else {
+            baudSpinner.setEnabled(port == null);
+        }
+    }
+
+    /** Does this USB serial device belong to the given board? CH340 = Pro Mini, ST VCP 0483:5740 = Blue Pill. */
+    private static boolean driverIsBoard(UsbSerialDriver d, String b) {
+        boolean st = d.getDevice().getVendorId() == DfuFlasher.VID_ST;
+        return BOARD_BLUEPILL.equals(b) == st;
+    }
     private boolean blue() { return "bluepill".equals(fwTarget); }
 
     /** Full-screen page: installed firmware, list of builds on the backoffice, download + flash with progress. */
@@ -1442,7 +1496,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             boolean isBlue = pendingDriver != null && pendingDriver.getDevice().getVendorId() == DfuFlasher.VID_ST;
             String[] o = opt.split(",");
             fwInstalled.setText("Installed: Grbl " + fwVersion + " · options " + flags
-                    + (isBlue ? " (grblHAL on Blue Pill)" : flags.contains("D") ? " (D13 = spindle enable)" : " (no spindle-enable pin)")
+                    + (isBlue ? (fwVersion.startsWith("1.1") ? " (Blue Pill, PB13 = spindle enable)" : " (grblHAL on Blue Pill)")
+                            : flags.contains("D") ? " (D13 = spindle enable)" : " (no spindle-enable pin)")
                     + (o.length >= 3 ? " · planner " + o[1].trim() + " blocks, RX " + o[2].trim() + " bytes" : "")
                     + "\nBoard: " + board);
         }
@@ -1804,17 +1859,235 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void showMenu(View anchor) {
         android.widget.PopupMenu m = new android.widget.PopupMenu(this, anchor);
         m.getMenu().add(0, 3, 0, "App update…" + (updateCode > BuildConfig.VERSION_CODE ? "  ●" : ""));
-        m.getMenu().add(0, 2, 1, "(A) Pro Mini firmware…");
-        m.getMenu().add(0, 4, 2, "(B) Blue Pill firmware…");
+        m.getMenu().add(0, 5, 1, "Settings…");
+        m.getMenu().add(0, 2, 2, "Firmware update – " + boardName(board()) + "…");
         m.getMenu().add(0, 1, 3, "About");
         m.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == 1) showAbout();
-            if (item.getItemId() == 2) showFirmwareMenu("promini");
-            if (item.getItemId() == 4) showFirmwareMenu("bluepill");
+            if (item.getItemId() == 5) showSettings();
+            if (item.getItemId() == 2) showFirmwareMenu(board());
             if (item.getItemId() == 3) showUpdatePage();
             return true;
         });
         m.show();
+    }
+
+    // ---------------------------------------------------------------- Settings page
+
+    private android.app.Dialog setDialog;
+    private TextView setProfile, setLatest, setInstalled;
+    private org.json.JSONObject setLatestBuild;
+    private String setLatestError;
+
+    /** What the app expects from each board's firmware (see README.md and firmware/bluepill/BUILD.md). */
+    private static String boardProfile(String b) {
+        if (BOARD_BLUEPILL.equals(b)) {
+            return "Firmware: Grbl 1.1f (robomechs STM32F103 port), image at 0x08002000\n"
+                    + "MCU: STM32F103C8T6, 72 MHz, 64 KB flash · settings in flash page 0x0800FC00\n"
+                    + "USB: native USB serial 0483:5740 (baud setting ignored)\n"
+                    + "Flashing: STM32duino bootloader over USB DFU (1EAF:0003)\n"
+                    + "RX buffer: 254 bytes · reports 4 axes (A is ignored)\n"
+                    + "Pins: spindle on/off PB13 · PWM PA8 · step PA0–PA2 · dir PA3–PA5 · disable PA6 · limits PB10–PB12 · probe PA15";
+        }
+        return "Firmware: Grbl 1.1h (gnea/grbl), 8 MHz build, D13 spindle enable\n"
+                + "MCU: ATmega328P, 3.3 V / 8 MHz, 32 KB flash · settings in EEPROM\n"
+                + "USB: CH340 serial at 38400 baud\n"
+                + "Flashing: Arduino bootloader (STK500v1, 57600 baud)\n"
+                + "RX buffer: 128 bytes\n"
+                + "Pins: spindle on/off D13 · PWM D11 · step D2–D4 · dir D5–D7 · enable D8 · limits D9/D10/D12 · probe A5";
+    }
+
+    /** Settings: choose the controller board (Pro Mini or Blue Pill) and see its firmware. */
+    private void showSettings() {
+        float dp = getResources().getDisplayMetrics().density;
+        int pad = (int) (16 * dp);
+        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
+        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+        root.setPadding(pad, pad, pad, pad);
+        root.setBackgroundColor(0xFF1D2024);
+
+        TextView title = new TextView(this);
+        title.setText("Settings");
+        title.setTextSize(22);
+        title.setTextColor(0xFFE3E6EA);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        root.addView(title);
+
+        TextView boardHdr = new TextView(this);
+        boardHdr.setText("Controller board");
+        boardHdr.setTextSize(17);
+        boardHdr.setTextColor(0xFFE3E6EA);
+        boardHdr.setPadding(0, pad, 0, (int) (4 * dp));
+        root.addView(boardHdr);
+
+        android.widget.RadioGroup group = new android.widget.RadioGroup(this);
+        android.widget.RadioButton rbPro = new android.widget.RadioButton(this);
+        rbPro.setId(View.generateViewId());
+        rbPro.setText("(A) Arduino Pro Mini – Grbl 1.1h, CH340 USB serial");
+        android.widget.RadioButton rbBlue = new android.widget.RadioButton(this);
+        rbBlue.setId(View.generateViewId());
+        rbBlue.setText("(B) Blue Pill STM32F103C8T6 – Grbl 1.1f, native USB");
+        for (android.widget.RadioButton rb : new android.widget.RadioButton[]{rbPro, rbBlue}) {
+            rb.setTextColor(0xFFE3E6EA);
+            rb.setTextSize(16);
+            group.addView(rb);
+        }
+        group.check(boardIsBlue() ? rbBlue.getId() : rbPro.getId());
+        root.addView(group);
+
+        TextView note = new TextView(this);
+        note.setTextColor(0xFF8B939C);
+        note.setText("Connect opens this board's USB device, and ☰ → Firmware update offers only its firmware. "
+                + "Changing the board takes effect at the next Connect.");
+        note.setPadding(0, (int) (4 * dp), 0, pad);
+        root.addView(note);
+
+        TextView fwHdr = new TextView(this);
+        fwHdr.setText("Selected firmware");
+        fwHdr.setTextSize(17);
+        fwHdr.setTextColor(0xFFE3E6EA);
+        root.addView(fwHdr);
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        android.widget.LinearLayout info = new android.widget.LinearLayout(this);
+        info.setOrientation(android.widget.LinearLayout.VERTICAL);
+        setProfile = new TextView(this);
+        setProfile.setTextColor(0xFFC8CDD3);
+        setProfile.setPadding(0, (int) (4 * dp), 0, (int) (8 * dp));
+        setLatest = new TextView(this);
+        setLatest.setTextColor(0xFFB8D0F0);
+        setLatest.setPadding(0, 0, 0, (int) (8 * dp));
+        setInstalled = new TextView(this);
+        setInstalled.setTextColor(0xFFB8E0B8);
+        info.addView(setProfile);
+        info.addView(setLatest);
+        info.addView(setInstalled);
+        scroll.addView(info);
+        root.addView(scroll, new android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        android.widget.LinearLayout buttons = new android.widget.LinearLayout(this);
+        buttons.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        Button fwBtn = new Button(this);
+        fwBtn.setText("Firmware update…");
+        Button closeBtn = new Button(this);
+        closeBtn.setText("Close");
+        for (Button btn : new Button[]{fwBtn, closeBtn}) {
+            btn.setAllCaps(false);
+            buttons.addView(btn, new android.widget.LinearLayout.LayoutParams(0,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        }
+        root.addView(buttons);
+
+        group.setOnCheckedChangeListener((g, id) -> {
+            if (streaming) {
+                log("Stop the running job before changing the board");
+                g.check(boardIsBlue() ? rbBlue.getId() : rbPro.getId());
+                return;
+            }
+            setBoard(id == rbBlue.getId() ? BOARD_BLUEPILL : BOARD_PROMINI);
+            if (port != null) log("Disconnect and connect again to use the " + boardName(board()));
+            loadLatestFirmware();
+            updateSettingsInfo();
+        });
+        fwBtn.setOnClickListener(v -> showFirmwareMenu(board()));
+        closeBtn.setOnClickListener(v -> setDialog.dismiss());
+
+        setDialog = new android.app.Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
+        setDialog.setContentView(root);
+        setDialog.setOnDismissListener(d -> setDialog = null);
+        setDialog.show();
+
+        if (port != null) queueSilent("$I");
+        loadLatestFirmware();
+        updateSettingsInfo();
+    }
+
+    /** Newest build of the selected board's firmware on the backoffice. */
+    private void loadLatestFirmware() {
+        final String b = board();
+        setLatestBuild = null;
+        setLatestError = null;
+        worker.execute(() -> {
+            org.json.JSONObject best = null;
+            String err = null;
+            try {
+                org.json.JSONArray a = new org.json.JSONArray(RemoteLog.get("/api/firmware"));
+                for (int i = 0; i < a.length(); i++) {
+                    org.json.JSONObject f = a.getJSONObject(i);
+                    if (!f.optString("target", BOARD_PROMINI).equals(b)) continue;
+                    if (best == null || f.optLong("published") > best.optLong("published")) best = f;
+                }
+            } catch (Exception e) {
+                err = e.getMessage();
+            }
+            final org.json.JSONObject latest = best;
+            final String error = err;
+            ui.post(() -> {
+                if (!b.equals(board())) return;           // board changed meanwhile
+                setLatestBuild = latest;
+                setLatestError = error;
+                updateSettingsInfo();
+            });
+        });
+    }
+
+    private void updateSettingsInfo() {
+        if (setDialog == null) return;
+        String b = board();
+        setProfile.setText(boardName(b) + "\n" + boardProfile(b));
+
+        if (setLatestError != null) {
+            setLatest.setText("Latest on the backoffice: could not load (" + setLatestError + ")");
+        } else if (setLatestBuild == null) {
+            setLatest.setText("Latest on the backoffice: loading…");
+        } else {
+            org.json.JSONObject f = setLatestBuild;
+            setLatest.setText(String.format(Locale.US, "Latest on the backoffice: %s\nVersion %s · %.1f KB · %s%s",
+                    f.optString("name"), f.optString("version"), f.optLong("size") / 1024.0,
+                    new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(new java.util.Date(f.optLong("published"))),
+                    f.optString("notes").isEmpty() ? "" : "\n" + f.optString("notes")));
+        }
+
+        StringBuilder s = new StringBuilder("Installed: ");
+        if (port == null || pendingDriver == null) {
+            s.append("not connected – tap Connect to read and check it");
+        } else if (!driverIsBoard(pendingDriver, b)) {
+            String other = BOARD_BLUEPILL.equals(b) ? BOARD_PROMINI : BOARD_BLUEPILL;
+            s.append("⚠ the connected device (").append(describe(pendingDriver)).append(") is a ")
+                    .append(boardName(other)).append(", not the selected board");
+        } else if (fwVersion == null) {
+            s.append("reading ($I)… (").append(describe(pendingDriver)).append(")");
+            if (wposKnown) s.append("\n⚠ No answer to $I although status reports arrive: the firmware ignores command lines"
+                    + (BOARD_BLUEPILL.equals(b) ? " (first Blue Pill build, 1.1f-maple64) – flash 1.1f-maple64-r2 or newer" : "")
+                    + ". Jobs cannot run until the firmware is updated.");
+        } else {
+            String opt = fwOptions != null ? fwOptions : "";
+            String[] o = opt.split(",");
+            s.append("Grbl ").append(fwVersion).append(" · options ").append(o[0])
+                    .append(o.length >= 3 ? " · planner " + o[1].trim() + " blocks · RX buffer " + o[2].trim() + " bytes" : "")
+                    .append("\n").append(compatibility(b, fwVersion, o));
+        }
+        setInstalled.setText(s);
+    }
+
+    /** Checks the installed firmware against what this app needs: Grbl 1.1 protocol, a known RX buffer, the right board. */
+    static String compatibility(String b, String version, String[] opt) {
+        boolean grbl11 = version.startsWith("1.1");
+        int rx = -1;
+        if (opt.length >= 3) {
+            try { rx = Integer.parseInt(opt[2].trim()); } catch (NumberFormatException ignored) { }
+        }
+        if (!grbl11) return "⚠ Not Grbl 1.1 – the app streams with Grbl 1.1's protocol; status and settings may not parse";
+        if (rx < 64) return "⚠ RX buffer size unknown – streaming falls back to 127 bytes";
+        boolean blue = BOARD_BLUEPILL.equals(b);
+        if (blue && !version.startsWith("1.1f")) {
+            return "✓ Grbl 1.1 protocol, RX " + rx + " bytes – works, but this is not the tested Blue Pill build (1.1f)";
+        }
+        if (!blue && !version.startsWith("1.1h")) {
+            return "✓ Grbl 1.1 protocol, RX " + rx + " bytes – works, but this is not the tested Pro Mini build (1.1h)";
+        }
+        return "✓ Works with this app: Grbl 1.1 protocol, RX " + rx + " bytes, status and $$ parsed";
     }
 
     // ---------------------------------------------------------------- App update page
@@ -2175,7 +2448,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void updateButtons() {
         boolean connected = port != null;
         btnConnect.setText(connected ? "Disconnect" : "Connect");
-        baudSpinner.setEnabled(!connected);
+        baudSpinner.setEnabled(!connected && !boardIsBlue());
         btnRun.setEnabled(connected && !streaming && docLength() > 0);
         btnLoad.setEnabled(!streaming && docLength() > 0);
         for (int id : new int[]{R.id.btnNew, R.id.btnOpen, R.id.btnClose}) findViewById(id).setEnabled(!streaming);

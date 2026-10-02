@@ -1,7 +1,7 @@
 # Blue Pill (STM32F103C8T6) firmware with the STM32duino bootloader
 
 Both builds load at **0x08002000** (above the 8 KB STM32duino/Maple bootloader), are flashed over
-USB DFU (`1EAF:0003`, alt "0x8002000") by Grbl Sender (☰ → (B) Blue Pill firmware…) or
+USB DFU (`1EAF:0003`, alt "0x8002000") by Grbl Sender (☰ → Settings → Blue Pill, then ☰ → Firmware update) or
 `dfu-util -d 1eaf:0003 -a 2 -D <bin>`, and talk to the tablet over native USB CDC (`0483:5740`).
 
 | Build | Chip | Size | In the app |
