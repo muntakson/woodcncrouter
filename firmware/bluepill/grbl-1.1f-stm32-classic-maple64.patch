@@ -42,6 +42,18 @@ index 0000000..3d786d5
 +	$(OBJCOPY) -O binary $< $@
 +clean:
 +	rm -rf $(BUILD)
+diff --git a/src/main.c b/src/main.c
+index 6db782b..7063e36 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -104,6 +104,7 @@ int main(void)
+ #ifndef USEUSB
+ 	USART1_Configuration(115200);
+ #else
++	USB_Reenumerate();
+ 	Set_USBClock();
+ 	USB_Interrupts_Config();
+ 	USB_Init();
 diff --git a/src/serial.c b/src/serial.c
 index b35e0de..af19f87 100644
 --- a/src/serial.c
@@ -259,6 +271,61 @@ index 0000000..b1eb461
 +
 +  .ARM.attributes 0 : { *(.ARM.attributes) }
 +}
+diff --git a/usb/hw_config.c b/usb/hw_config.c
+index e427b42..4997ea4 100644
+--- a/usb/hw_config.c
++++ b/usb/hw_config.c
+@@ -22,6 +22,7 @@
+ #include "platform_config.h"
+ #include "usb_pwr.h"
+ #include "stm32f10x_rcc.h"
++#include "stm32f10x_gpio.h"
+ #include "misc.h"
+ 
+ ErrorStatus HSEStartUpStatus;
+@@ -91,6 +92,30 @@ void USB_Interrupts_Config(void)
+ 	NVIC_Init(&NVIC_InitStructure);
+ }
+ 
++/*******************************************************************************
++ * Description    : Force the host to re-enumerate the device.
++ * The Blue/Black Pill has no D+ switch, only a fixed 1.5k pull-up on PA12. After the
++ * STM32duino bootloader jumps here, some hosts (an Android tablet) never notice
++ * that the DFU device has gone and never see this CDC device. Holding D+ low for
++ * about 20 ms before the USB peripheral starts looks like an unplug to any host.
++ *******************************************************************************/
++void USB_Reenumerate(void)
++{
++	GPIO_InitTypeDef gpio;
++	volatile uint32_t i;
++
++	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
++	gpio.GPIO_Pin = GPIO_Pin_12;
++	gpio.GPIO_Speed = GPIO_Speed_2MHz;
++	gpio.GPIO_Mode = GPIO_Mode_Out_PP;
++	GPIO_Init(GPIOA, &gpio);
++	GPIO_ResetBits(GPIOA, GPIO_Pin_12);
++	for (i = 0; i < 400000; i++)	/* >= 20 ms at 72 MHz */
++		;
++	gpio.GPIO_Mode = GPIO_Mode_IN_FLOATING;
++	GPIO_Init(GPIOA, &gpio);
++}
++
+ /*******************************************************************************
+  * Description    : Software Connection/Disconnection of USB Cable
+  *******************************************************************************/
+diff --git a/usb/hw_config.h b/usb/hw_config.h
+index 1bde5dc..427c808 100644
+--- a/usb/hw_config.h
++++ b/usb/hw_config.h
+@@ -36,6 +36,7 @@ void Set_USBClock(void);
+ void Enter_LowPowerMode(void);
+ void Leave_LowPowerMode(void);
+ void USB_Interrupts_Config(void);
++void USB_Reenumerate(void);
+ void USB_Cable_Config(FunctionalState NewState);
+ void USART_Config_Default(void);
+ bool USART_Config(void);
 diff --git a/usb/usb_endp.c b/usb/usb_endp.c
 index 18bf619..10334ba 100644
 --- a/usb/usb_endp.c

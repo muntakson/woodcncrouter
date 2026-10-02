@@ -1,4 +1,11 @@
-# STM32duino bootloader 2.0 for the Blue Pill
+# STM32duino bootloader 2.0 for the Blue Pill and F103 Black Pill
+
+| File | Board | LED | SHA-256 |
+|---|---|---|---|
+| `generic_boot20_pc13.bin` | Blue Pill | PC13 | `a25ee15f…4ccec` |
+| `generic_boot20_pb12.bin` | STM32F103 Black Pill | PB12 | `2ca76b0aae189df217be7b12fb9a2cde33f3f35f98408b62c7e9192bb0e55047` |
+
+Both are 22,268 bytes, with the same layout; only the LED pin differs. Install them the same way (below).
 
 `generic_boot20_pc13.bin` from [rogerclarkmelbourne/STM32duino-bootloader](https://github.com/rogerclarkmelbourne/STM32duino-bootloader/tree/master/binaries)
 (SHA-256 `a25ee15f986d7102857cc682478bde45e52333431b16a2abbffa339eeca4ccec`, 22,268 bytes).
