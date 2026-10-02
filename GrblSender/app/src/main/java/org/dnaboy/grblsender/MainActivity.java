@@ -82,7 +82,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private final StringBuilder rxLine = new StringBuilder();
 
     private UsbManager usbManager;
-    private SerialLink port;
+    private volatile SerialLink port;
     private UsbSerialDriver pendingDriver;
     private boolean opening = false;
     private volatile boolean gotData = false;
@@ -339,6 +339,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     @Override
     protected void onDestroy() {
+        grblWaitId++;
         if (streaming) {
             RemoteLog.e("app", "app closed during run at line " + ackedLines + "/" + program.size() + " – job aborted");
             JobService.stop(this, "App was closed – job aborted at line " + ackedLines + " / " + program.size());
@@ -381,7 +382,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
         final List<UsbSerialDriver> drivers = mine.isEmpty() ? all : mine;
         if (drivers.isEmpty() && findDfuDevice() != null) {
-            log("Blue Pill bootloader (DFU 1EAF:0003) detected – use ☰ → Firmware update, then reset with BOOT1 = 0");
+            log("Bootloader (DFU 1EAF:0003) detected – it starts Grbl by itself after about 1.5 s; to flash use ☰ → Firmware update – STM32F103C8T6. If it stays, set BOOT1 = 0 and replug or press RESET");
             return;
         }
         if (drivers.isEmpty()) {
@@ -1326,7 +1327,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private String board() { return getPreferences(MODE_PRIVATE).getString("board", BOARD_PROMINI); }
     private boolean boardIsBlue() { return BOARD_BLUEPILL.equals(board()); }
     private static String boardName(String b) {
-        return BOARD_BLUEPILL.equals(b) ? "Blue Pill (STM32F103C8T6)" : "Arduino Pro Mini";
+        return BOARD_BLUEPILL.equals(b) ? "STM32F103C8T6 Blue / Black Pill" : "Arduino Pro Mini";
     }
 
     private void setBoard(String b) {
@@ -1367,7 +1368,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         root.setBackgroundColor(0xFF1D2024);
 
         TextView title = new TextView(this);
-        title.setText(blue() ? "(B) Blue Pill STM32F103C8T6 firmware" : "(A) Arduino Pro Mini firmware");
+        title.setText(blue() ? "(B) STM32F103C8T6 Blue / Black Pill firmware" : "(A) Arduino Pro Mini firmware");
         title.setTextSize(22);
         title.setTextColor(0xFFE3E6EA);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -1382,10 +1383,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (blue()) {
             TextView how = new TextView(this);
             how.setTextColor(0xFFF0C050);
-            how.setText("Flashing uses the STM32duino bootloader over the Blue Pill's own USB port (USB DFU).\n"
-                    + "After you tap Download & Flash: set the BOOT1 jumper to 1 and press RESET (the bootloader then stays active), "
-                    + "or just press RESET – the app catches the bootloader as soon as it appears.\n"
-                    + "Afterwards: BOOT1 back to 0 and RESET; the Blue Pill reappears as \"STM32 Virtual ComPort\".");
+            how.setText("Flashing uses the STM32duino bootloader over the board's own USB port (USB DFU).\n"
+                    + "Keep BOOT0 and BOOT1 at 0. Tap Download & Flash first, then press RESET on the board: the bootloader only "
+                    + "runs for about 1.5 s and the app grabs it straight away. The first time, Android asks for USB access – "
+                    + "tick \"Always\", allow, and press RESET once more.\n"
+                    + "Afterwards the board restarts as \"STM32 Virtual ComPort\" running the new firmware.");
             how.setPadding(0, 0, 0, (int) (8 * dp));
             root.addView(how);
         }
@@ -1663,8 +1665,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         String msg = name + "\n" + details + "\n\n"
                 + String.format(Locale.US, "%d bytes for 0x08002000 (%.0f%% of %d bytes)\n\n", bin.length,
                 100.0 * bin.length / DfuFlasher.MAX_IMAGE, DfuFlasher.MAX_IMAGE)
-                + "Next: set BOOT1 = 1 and press RESET on the Blue Pill (or just press RESET). "
-                + "The app waits up to 2 minutes for the bootloader, then writes and verifies.\n\n"
+                + "Next: tap Flash, then press RESET on the board (BOOT0 and BOOT1 at 0). "
+                + "The app waits up to 2 minutes for the bootloader, catches it as it starts, then writes and verifies.\n\n"
                 + "The STM32duino bootloader itself is never overwritten.";
         new AlertDialog.Builder(this)
                 .setTitle("Flash Blue Pill?")
@@ -1675,6 +1677,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     }
 
     private void startDfuFlash(byte[] bin, String name) {
+        grblWaitId++;   // a new flash replaces any earlier wait for Grbl
         if (streaming) return;
         RemoteLog.i("dfu", "start: " + name + " (" + bin.length + " bytes)");
         if (port != null) disconnect();
@@ -1686,7 +1689,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         final ProgressBar bar = fwBar;
         bar.setVisibility(View.VISIBLE);
         bar.setIndeterminate(true);
-        status.setText("Waiting for the bootloader… set BOOT1 = 1 and press RESET on the Blue Pill (or press RESET now).");
+        status.setText("Press RESET on the board now (BOOT0 and BOOT1 stay at 0). The app catches the bootloader as it starts.");
 
         new Thread(() -> {
             String result;
@@ -1694,28 +1697,34 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             UsbDeviceConnection conn = null;
             UsbInterface claimed = null;
             try {
+                // The STM32duino bootloader only answers reliably in the first ~1.5 s after it enumerates: once the
+                // host autosuspends the idle device it refuses SET_INTERFACE ("could not select DFU alt 2").
+                // So never use a bootloader that was already there; wait for a fresh one and claim it at once.
+                java.util.Set<String> stale = new java.util.HashSet<>();
+                UsbDevice already = findDfuDevice();
+                if (already != null) {
+                    stale.add(already.getDeviceName());
+                    RemoteLog.i("dfu", "bootloader already present (" + already.getDeviceName() + ") – waiting for a fresh one");
+                }
                 UsbDevice dev = null;
                 long until = System.currentTimeMillis() + 120_000;
-                while ((dev = findDfuDevice()) == null) {
-                    if (System.currentTimeMillis() > until) throw new java.io.IOException("no bootloader (1EAF:0003) appeared within 2 minutes");
-                    Thread.sleep(250);
-                }
-                if (!usbManager.hasPermission(dev)) {
-                    final UsbDevice d = dev;
-                    ui.post(() -> {
-                        status.setText("Bootloader found – please allow USB access…");
-                        Intent pi = new Intent(ACTION_DFU_PERMISSION).setPackage(getPackageName());
-                        usbManager.requestPermission(d, PendingIntent.getBroadcast(this, 1, pi,
-                                Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0));
-                    });
-                    long pUntil = System.currentTimeMillis() + 60_000;
-                    while (!usbManager.hasPermission(dev)) {
-                        if (System.currentTimeMillis() > pUntil || findDfuDevice() == null) {
-                            throw new java.io.IOException("USB permission not granted in time, or the bootloader left DFU mode "
-                                    + "(use the BOOT1 = 1 jumper so it stays in the bootloader)");
-                        }
-                        Thread.sleep(200);
+                while (true) {
+                    UsbDevice d0 = findDfuDevice();
+                    if (d0 != null && !stale.contains(d0.getDeviceName())) {
+                        if (usbManager.hasPermission(d0)) { dev = d0; break; }
+                        // first time: ask, then wait for the next RESET (the window is over by the time the user taps Allow)
+                        final UsbDevice d = d0;
+                        stale.add(d0.getDeviceName());
+                        ui.post(() -> {
+                            status.setText("Allow USB access (tick \"Always\"), then press RESET on the board once more.");
+                            Intent pi = new Intent(ACTION_DFU_PERMISSION).setPackage(getPackageName());
+                            usbManager.requestPermission(d, PendingIntent.getBroadcast(this, 1, pi,
+                                    Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0));
+                        });
                     }
+                    if (d0 == null) stale.clear();      // it left: any later appearance is fresh
+                    if (System.currentTimeMillis() > until) throw new java.io.IOException("no fresh bootloader (1EAF:0003) within 2 minutes – press RESET while the app is waiting");
+                    Thread.sleep(50);
                 }
                 // the alternate setting that writes to 0x08002000
                 UsbInterface target = null;
@@ -1733,7 +1742,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 if (conn == null) throw new java.io.IOException("could not open the bootloader USB device");
                 if (!conn.claimInterface(target, true)) throw new java.io.IOException("could not claim the DFU interface");
                 claimed = target;
-                if (!conn.setInterface(target)) throw new java.io.IOException("could not select DFU alt " + target.getAlternateSetting());
+                if (!conn.setInterface(target)) throw new java.io.IOException("could not select DFU alt " + target.getAlternateSetting()
+                        + " – the bootloader stopped answering. Tap Download & Flash again, then press RESET");
                 int[] fd = DfuFlasher.functionalDescriptor(conn.getRawDescriptors());
                 RemoteLog.i("dfu", "bootloader: alt " + target.getAlternateSetting() + " \"" + target.getName()
                         + "\", transferSize " + fd[0] + ", canUpload " + (fd[1] == 1));
@@ -1767,12 +1777,44 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 fwBusy = false;
                 if (status != null) {
                     status.setText((success ? "✔ " : "✖ ") + r + (success
-                            ? "\nNow set BOOT1 back to 0 and press RESET. The Blue Pill reappears as \"STM32 Virtual ComPort\" – then tap Connect."
+                            ? "\n▶ Replug the USB cable or press RESET on the board to start the new firmware (Android cannot restart it over USB). "
+                            + "The first time, Android asks to open Grbl Sender for \"STM32F103C8T6\" – tick \"Always\" and tap OK. "
+                            + "The app connects by itself when Grbl appears."
                             : "\nThe bootloader is untouched – you can simply try again."));
                 }
                 updateFirmwareButtons();
+                if (success) awaitGrblAfterDfu(status);
             });
         }, "dfu").start();
+    }
+
+    /**
+     * After a DFU flash the STM32duino bootloader waits for a USB bus reset, which an Android app cannot send.
+     * The user presses RESET; wait for the board to come back as Grbl's USB serial (0483:5740) and connect.
+     */
+    /** Bumped by each new wait (and by onDestroy) so an older waiting thread stops. */
+    private volatile int grblWaitId;
+
+    private void awaitGrblAfterDfu(TextView status) {
+        log("Replug the USB cable or press RESET on the board to start the new firmware – the app connects by itself");
+        final int id = ++grblWaitId;
+        new Thread(() -> {
+            // no deadline: Grbl r3 re-enumerates by itself about 2 s after the bootloader, whenever the user replugs
+            while (id == grblWaitId && port == null) {
+                for (UsbSerialDriver d : serialProber().findAllDrivers(usbManager)) {
+                    if (d.getDevice().getVendorId() == DfuFlasher.VID_ST) {
+                        ui.post(() -> {
+                            if (port != null || opening) return;
+                            if (status != null && fwDialog != null) status.setText("✔ New firmware is running – connecting…");
+                            setBoard(BOARD_BLUEPILL);
+                            connect(d);
+                        });
+                        return;
+                    }
+                }
+                try { Thread.sleep(300); } catch (InterruptedException e) { return; }
+            }
+        }, "await-grbl").start();
     }
 
     private void startFlash(IntelHex.Image img, String name) {
@@ -1865,7 +1907,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         android.widget.PopupMenu m = new android.widget.PopupMenu(this, anchor);
         m.getMenu().add(0, 3, 0, "App update…" + (updateCode > BuildConfig.VERSION_CODE ? "  ●" : ""));
         m.getMenu().add(0, 5, 1, "Settings…");
-        m.getMenu().add(0, 2, 2, "Firmware update – " + boardName(board()) + "…");
+        m.getMenu().add(0, 2, 2, "Firmware update – Arduino Pro Mini…" + (boardIsBlue() ? "" : "  ✓"));
+        m.getMenu().add(0, 4, 2, "Firmware update – STM32F103C8T6 Blue / Black Pill…" + (boardIsBlue() ? "  ✓" : ""));
         m.getMenu().add(0, 6, 3, "Wiring…");
         m.getMenu().add(0, 7, 4, "CNC setup…");
         m.getMenu().add(0, 1, 5, "About");
@@ -1874,7 +1917,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             if (item.getItemId() == 5) showSettings();
             if (item.getItemId() == 6) setupPages().showWiring();
             if (item.getItemId() == 7) setupPages().showCncSetup();
-            if (item.getItemId() == 2) showFirmwareMenu(board());
+            if (item.getItemId() == 2) showFirmwareMenu(BOARD_PROMINI);
+            if (item.getItemId() == 4) showFirmwareMenu(BOARD_BLUEPILL);
             if (item.getItemId() == 3) showUpdatePage();
             return true;
         });
@@ -1949,7 +1993,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         rbPro.setText("(A) Arduino Pro Mini – Grbl 1.1h, CH340 USB serial");
         android.widget.RadioButton rbBlue = new android.widget.RadioButton(this);
         rbBlue.setId(View.generateViewId());
-        rbBlue.setText("(B) Blue Pill STM32F103C8T6 – Grbl 1.1f, native USB");
+        rbBlue.setText("(B) STM32F103C8T6 Blue / Black Pill – Grbl 1.1f, native USB");
         for (android.widget.RadioButton rb : new android.widget.RadioButton[]{rbPro, rbBlue}) {
             rb.setTextColor(0xFFE3E6EA);
             rb.setTextSize(16);
@@ -1960,7 +2004,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
         TextView note = new TextView(this);
         note.setTextColor(0xFF8B939C);
-        note.setText("Connect opens this board's USB device, and ☰ → Firmware update offers only its firmware. "
+        note.setText("Connect opens this board's USB device; ✓ marks its Firmware update entry in the ☰ menu. "
                 + "Changing the board takes effect at the next Connect.");
         note.setPadding(0, (int) (4 * dp), 0, pad);
         root.addView(note);

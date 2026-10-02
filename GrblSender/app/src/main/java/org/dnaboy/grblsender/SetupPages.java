@@ -161,7 +161,7 @@ final class SetupPages {
         pro.setId(View.generateViewId());
         blue.setId(View.generateViewId());
         pro.setText("Arduino Pro Mini");
-        blue.setText("Blue Pill STM32F103C8T6");
+        blue.setText("STM32F103C8T6 Blue / Black Pill");
         for (RadioButton rb : new RadioButton[]{pro, blue}) { rb.setTextColor(FG); rb.setTextSize(16); g.addView(rb); }
         LinearLayout holder = (LinearLayout) body.getParent().getParent();   // root
         holder.addView(g, 1);

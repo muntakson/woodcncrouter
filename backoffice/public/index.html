@@ -89,8 +89,11 @@
     <h2>Latest APK</h2>
     <div class="rel" id="release"><div class="empty">No release published</div></div>
 
-    <h2>Arduino firmware</h2>
-    <div id="firmware"><div class="empty">No firmware published</div></div>
+    <h2>Firmware – Arduino Pro Mini</h2>
+    <div id="fw-promini"><div class="empty">No firmware published</div></div>
+
+    <h2>Firmware – STM32F103C8T6 (Blue / Black Pill)</h2>
+    <div id="fw-bluepill"><div class="empty">No firmware published</div></div>
 
     <h2>G-code files</h2>
     <div id="gcode"><div class="empty">No G-code files</div></div>
@@ -252,19 +255,29 @@ function selectDevice(id) {
 $('#allDev').onclick = () => selectDevice('');
 
 async function loadFirmware() {
-  const list = await fetch('/api/firmware').then((r) => r.json());
-  const box = $('#firmware');
-  if (!list.length) return;
-  box.textContent = '';
-  list.forEach((f, i) => {
+  const list = await fetch('/api/firmware').then((r) => r.json());   // newest first
+  const boxes = { promini: $('#fw-promini'), bluepill: $('#fw-bluepill') };
+  const seen = {};
+  for (const f of list) {
+    const board = f.target === 'promini' ? 'promini' : 'bluepill';   // bluepill-128k goes with the STM32 builds
+    const box = boxes[board];
+    if (!seen[board]) { box.textContent = ''; seen[board] = true; }
+    const offered = f.target === 'promini' || f.target === 'bluepill';
+    const first = offered && !box.querySelector('.gf.offered');
     const el = document.createElement('div');
-    el.className = 'gf';
-    el.innerHTML = `<div class="fname"></div><div class="meta"></div><a class="small" download>Download .hex</a>`;
-    el.querySelector('.fname').textContent = (i === 0 ? '★ ' : '') + f.name;
-    el.querySelector('.meta').textContent = `${f.version} · ${(f.size / 1024).toFixed(1)} KB · ${new Date(f.published).toLocaleString()}` + (f.notes ? ` · ${f.notes}` : '');
-    el.querySelector('a').href = f.url;
+    el.className = 'gf' + (offered ? ' offered' : '');
+    if (!offered) el.style.opacity = '0.55';
+    el.innerHTML = `<div class="fname"></div><div class="meta"></div><a class="small" download></a>`;
+    el.querySelector('.fname').textContent = (first ? '★ ' : '') + f.name;
+    const where = f.format === 'bin' ? ` · flash at ${f.address} over DFU` : '';
+    const hidden = offered ? '' : ' · not offered in the app (needs a 128 KB chip)';
+    el.querySelector('.meta').textContent = `${f.version} · ${(f.size / 1024).toFixed(1)} KB${where} · ${new Date(f.published).toLocaleString()}`
+      + (f.notes ? ` · ${f.notes}` : '') + hidden;
+    const a = el.querySelector('a');
+    a.href = f.url;
+    a.textContent = `Download .${f.format || 'hex'}`;
     box.appendChild(el);
-  });
+  }
 }
 
 async function loadGcode() {
