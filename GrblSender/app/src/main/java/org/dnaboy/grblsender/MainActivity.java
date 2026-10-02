@@ -114,6 +114,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private String machineState = "";
     /** Grbl motion settings ($11, $12, $110-112, $120-122) for run-time estimates; read from $$ on connect. */
     private final TimeEstimator.Limits limits = new TimeEstimator.Limits();
+    /** Last $$ report ("$100" -> "81.490"), shown on the CNC setup page. */
+    private final java.util.Map<String, String> grblSettings = new java.util.HashMap<>();
+    private static final java.util.regex.Pattern SETTING_LINE = java.util.regex.Pattern.compile("^\\$(\\d+)=([-0-9.]+)\\s*$");
     private int execIdx = -1;                  // program line the machine is executing (from live position)
     private long holdMs, holdSinceMs;          // time spent paused (M0 / feed hold) during the run
     private long lastStatusMs;                 // when Grbl last answered a status query
@@ -603,6 +606,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             updateProgress();
             return;
         }
+        java.util.regex.Matcher sm = SETTING_LINE.matcher(line);
+        if (sm.matches()) grblSettings.put("$" + sm.group(1), sm.group(2));
         if (limits.apply(line) && !streaming) {
             // machine settings changed: redo the estimate once the $$ report is complete
             ui.removeCallbacks(reparse);
@@ -1861,15 +1866,33 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         m.getMenu().add(0, 3, 0, "App update…" + (updateCode > BuildConfig.VERSION_CODE ? "  ●" : ""));
         m.getMenu().add(0, 5, 1, "Settings…");
         m.getMenu().add(0, 2, 2, "Firmware update – " + boardName(board()) + "…");
-        m.getMenu().add(0, 1, 3, "About");
+        m.getMenu().add(0, 6, 3, "Wiring…");
+        m.getMenu().add(0, 7, 4, "CNC setup…");
+        m.getMenu().add(0, 1, 5, "About");
         m.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == 1) showAbout();
             if (item.getItemId() == 5) showSettings();
+            if (item.getItemId() == 6) setupPages().showWiring();
+            if (item.getItemId() == 7) setupPages().showCncSetup();
             if (item.getItemId() == 2) showFirmwareMenu(board());
             if (item.getItemId() == 3) showUpdatePage();
             return true;
         });
         m.show();
+    }
+
+    // ---------------------------------------------------------------- Wiring and CNC setup pages
+
+    private SetupPages setupPages() {
+        return new SetupPages(this, new SetupPages.Host() {
+            @Override public boolean connected() { return port != null; }
+            @Override public boolean busy() { return streaming; }
+            @Override public String board() { return MainActivity.this.board(); }
+            @Override public java.util.Map<String, String> grblSettings() { return grblSettings; }
+            @Override public void send(String cmd) { queueCommand(cmd); }
+            @Override public void log(String msg) { MainActivity.this.log(msg); }
+            @Override public SharedPreferences prefs() { return getPreferences(MODE_PRIVATE); }
+        });
     }
 
     // ---------------------------------------------------------------- Settings page

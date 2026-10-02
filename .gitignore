@@ -21,3 +21,4 @@ __pycache__/
 backoffice/firmware/
 grblhal-stm32f1/
 grbl-stm32-classic/
+GrblSender/art/out/
