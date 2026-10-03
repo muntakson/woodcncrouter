@@ -31,6 +31,8 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
@@ -171,6 +173,22 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private static final int LARGE_LINES = 4000;
     private static final int LARGE_CHARS = 150_000;
     private ToolpathView preview;
+    private TextView chipUsb, chipMachine, chipCloud, chipRemote;
+    private View pageControl;
+    private FrameLayout pageSettings;
+    private final LinearLayout[] navItems = new LinearLayout[5];
+    private static final int NAV_CONTROL = 0, NAV_SETTINGS = 1, NAV_WIRING = 2, NAV_SETUP = 3, NAV_ABOUT = 4;
+    private int page = NAV_CONTROL;
+
+    // Remote control and job log
+    private RemoteControl remote;
+    private JobLog jobLog;
+    private JobLog.Job currentJob;
+    private String jobSource = "tablet";       // who started the running job
+    private String holdSource = "tablet";      // who pressed Hold last
+    private String endResult, endDetail;       // why the running job is about to end (set before finishRun(false))
+    private long etaSec = -1;
+    private long lastPublishMs;
     private View fullControls;
     private TextView fullState;
     private boolean fullScreen;
@@ -208,6 +226,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        RemoteLog.setServer(getPreferences(MODE_PRIVATE).getString("server", BuildConfig.LOG_SERVER));
         // RemoteLog's own startup check is replaced by the update checker below (respects the auto-check setting)
         RemoteLog.init(getApplicationContext(), (code, name) -> { });
         ui.postDelayed(autoUpdateCheck, 3000);
@@ -233,6 +252,16 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         editor = findViewById(R.id.editor);
         viewer = findViewById(R.id.viewer);
         preview = findViewById(R.id.preview);
+        chipUsb = findViewById(R.id.chipUsb);
+        chipMachine = findViewById(R.id.chipMachine);
+        chipCloud = findViewById(R.id.chipCloud);
+        chipRemote = findViewById(R.id.chipRemote);
+        pageControl = findViewById(R.id.pageControl);
+        pageSettings = findViewById(R.id.pageSettings);
+        buildNavRail();
+        chipCloud.setOnClickListener(v -> openSettings(SEC_DEBUG));
+        chipRemote.setOnClickListener(v -> openSettings(SEC_GENERAL));
+        chipUsb.setOnClickListener(v -> openSettings(SEC_DEBUG));
 
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, BAUDS);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
@@ -264,15 +293,14 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         findViewById(R.id.btnClose).setOnClickListener(v -> confirmDiscard(this::closeDocument));
         btnLoad.setOnClickListener(v -> load(null));
         btnRun.setOnClickListener(v -> run());
-        findViewById(R.id.btnHold).setOnClickListener(v -> writeRaw(new byte[]{'!'}));
+        findViewById(R.id.btnHold).setOnClickListener(v -> feedHold("tablet"));
         findViewById(R.id.btnResume).setOnClickListener(v -> writeRaw(new byte[]{'~'}));
         findViewById(R.id.btnStop).setOnClickListener(v -> stopJob());
         findViewById(R.id.btnFit).setOnClickListener(v -> preview.fit());
-        findViewById(R.id.btnMenu).setOnClickListener(this::showMenu);
         fullControls = findViewById(R.id.fullControls);
         fullState = findViewById(R.id.fullState);
         findViewById(R.id.btnFull).setOnClickListener(v -> setFullScreen(!fullScreen));
-        findViewById(R.id.fullHold).setOnClickListener(v -> writeRaw(new byte[]{'!'}));
+        findViewById(R.id.fullHold).setOnClickListener(v -> feedHold("tablet"));
         findViewById(R.id.fullResume).setOnClickListener(v -> writeRaw(new byte[]{'~'}));
         findViewById(R.id.fullStop).setOnClickListener(v -> stopJob());
         tabEditor.setOnClickListener(v -> showConsole(false));
@@ -309,7 +337,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         showConsole(false);
         updateTitle();
         updateButtons();
-        log("Grbl Sender " + BuildConfig.VERSION_NAME + " ready. Board: " + boardName(board()) + " (☰ → Settings). Plug it in and tap Connect.");
+        log("Grbl Sender " + BuildConfig.VERSION_NAME + " ready. Board: " + boardName(board()) + " (Settings → General). Plug it in and tap Connect.");
+        jobLog = JobLog.get(this);
+        remote = new RemoteControl(this::remoteExecute, jobLog);
+        remote.setStateListener((on, detail) -> updateChips());
+        publishStatus(true);
+        remote.start();
+        updateChips();
         restoreDocument();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -341,12 +375,16 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     protected void onDestroy() {
         grblWaitId++;
         if (streaming) {
+            endResult = "aborted";
+            endDetail = "the app was closed";
             RemoteLog.e("app", "app closed during run at line " + ackedLines + "/" + program.size() + " – job aborted");
             JobService.stop(this, "App was closed – job aborted at line " + ackedLines + " / " + program.size());
         }
         ui.removeCallbacks(autoUpdateCheck);
         unregisterReceiver(usbReceiver);
         disconnect();
+        if (settingsLeave != null) settingsLeave.run();
+        remote.stop();
         writer.shutdown();
         worker.shutdown();
         super.onDestroy();
@@ -504,17 +542,24 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         // learn the rapid rate for time estimates
         ui.postDelayed(() -> { if (port == link) { queueSilent("$$"); queueSilent("$I"); } }, 2000);
         updateButtons();
+        updateChips();
+        publishStatus(true);
     }
 
     private void disconnect() {
         ui.removeCallbacks(statusPoll);
-        if (streaming) finishRun(false);
+        if (streaming) {
+            if (endResult == null) { endResult = "disconnected"; endDetail = "the USB link to the controller closed"; }
+            finishRun(false);
+        }
         streaming = false;
         closePort();
         machineState = "";
         txtState.setText("Disconnected");
         txtState.setTextColor(0xFFAAAAAA);
         updateButtons();
+        updateChips();
+        publishStatus(true);
     }
 
     private void closePort() {
@@ -528,6 +573,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void writeRaw(byte[] data) {
         final SerialLink p = port;
         if (p == null) return;
+        if (data.length == 1 && data[0] != '?') DebugLog.cnc(">> " + realtimeName(data[0]));
         writer.execute(() -> {
             try {
                 p.write(data, 1000);
@@ -581,7 +627,20 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     private int silentAcks = 0;   // responses of internally issued commands are not echoed
 
+    private static String realtimeName(byte b) {
+        switch (b) {
+            case '!': return "! (feed hold)";
+            case '~': return "~ (cycle start / resume)";
+            case 0x18: return "Ctrl-X (soft reset)";
+            case (byte) 0x85: return "0x85 (jog cancel)";
+            default: return String.format(Locale.US, "0x%02X", b & 0xFF);
+        }
+    }
+
     private void handleLine(String line) {
+        if (line.startsWith("<")) DebugLog.cncVerbose("<< " + line);
+        else if (line.startsWith("error:") || line.startsWith("ALARM")) DebugLog.cncErr("<< " + line + (line.startsWith("error:") ? describeError(line) : ""));
+        else DebugLog.cnc("<< " + line);
         if (line.startsWith("<")) {
             lastStatusMs = System.currentTimeMillis();
             parseStatus(line);
@@ -617,6 +676,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (line.startsWith("Grbl ")) {
             // Banner after reset: everything outstanding was discarded
             if (streaming) {
+                endResult = "aborted";
+                endDetail = "Grbl reset during the job";
                 log("!! Grbl reset during job – job aborted");
                 finishRun(false);
             }
@@ -663,7 +724,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         System.arraycopy(w, 0, wpos, 0, 3);
         wposKnown = true;
 
-        txtPos.setText(String.format(Locale.US, "X %8.3f\nY %8.3f\nZ %8.3f", w[0], w[1], w[2]));
+        txtPos.setText(dro(w));
         txtMPos.setText(String.format(Locale.US, "MPos %.3f, %.3f, %.3f", mpos[0], mpos[1], mpos[2]));
         txtState.setText(machineState + (streaming ? "  ▶" : ""));
         int color;
@@ -674,6 +735,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         txtState.setTextColor(color);
         fullState.setText(String.format(Locale.US, "%s   X%.2f Y%.2f Z%.2f", machineState, w[0], w[1], w[2]));
         fullState.setTextColor(color);
+        if (!machineState.equals(prevState)) updateChips();
+        publishStatus(false);
 
         preview.setTool(w[0], w[1], w[2]);
         if (streaming) {
@@ -714,6 +777,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             inFlight.add(new Sent(len, fromProgram));
             inFlightBytes += len;
             writeRaw((line + "\n").getBytes(StandardCharsets.US_ASCII));
+            DebugLog.cnc(">> " + line);
             if (!fromProgram && !(silentAcks > 0 && line.equals("$$"))) log(">> " + line);
         }
         if (streaming && allAckedAtMs == 0 && nextLine >= program.size() && ackedLines >= program.size()) {
@@ -885,14 +949,32 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         showConsole(false);
         preview.setRunning(true);
         preview.setDoneLine(-1);
-        log("Run started: " + (docName != null ? docName : "untitled"));
+        log("Run started: " + (docName != null ? docName : "untitled") + (jobSource.equals("tablet") ? "" : " (from the " + jobSource + ")"));
+        endResult = null;
+        endDetail = null;
+        etaSec = -1;
+        currentJob = jobLog.start(docName != null ? docName : "untitled", program.size(),
+                job != null ? Math.round(job.estSeconds) : 0, jobSource);
+        if (jobsSection != null) jobsSection.refresh();
         JobService.start(this, "Running " + (docName != null ? docName : "untitled"));
         updateButtons();
+        updateChips();
+        publishStatus(true);
         pump();
     }
 
-    private void stopJob() {
+    /** Feed hold ('!'); {@code who} ("tablet" / "backoffice") goes into the job log's pause entry. */
+    private void feedHold(String who) {
+        holdSource = who;
+        writeRaw(new byte[]{'!'});
+    }
+
+    private void stopJob() { stopJob("tablet"); }
+
+    private void stopJob(String who) {
         if (!streaming) { softReset(); return; }
+        endResult = "stopped";
+        endDetail = "Stop pressed on the " + who;
         // Feed hold first so the reset does not lose position, then reset to flush Grbl's planner
         writeRaw(new byte[]{'!'});
         final int at = ackedLines;
@@ -916,6 +998,20 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         streaming = true;                     // heartbeat() reads run state
         RemoteLog.i("run", "final: " + heartbeat());
         streaming = false;
+        long now = System.currentTimeMillis();
+        if (holdSinceMs != 0) {
+            holdMs += now - holdSinceMs;
+            holdSinceMs = 0;
+        }
+        jobLog.end(currentJob, completed ? "completed" : endResult != null ? endResult : "stopped", ackedLines, errorCount,
+                holdMs, completed ? null : endDetail);
+        currentJob = null;
+        if (jobsSection != null) jobsSection.refresh();
+        jobSource = "tablet";
+        endResult = null;
+        endDetail = null;
+        etaSec = -1;
+        ui.post(() -> { updateChips(); publishStatus(true); });
         long sec = (System.currentTimeMillis() - jobStartMs) / 1000;
         if (!completed) {
             String m = "Stopped at line " + ackedLines + " / " + program.size() + " after " + hms(sec);
@@ -1023,8 +1119,29 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         // pause bookkeeping so the remaining-time estimate is not skewed by M0 / feed hold
         boolean held = machineState.startsWith("Hold") || machineState.startsWith("Door");
         long now = System.currentTimeMillis();
-        if (held && holdSinceMs == 0) holdSinceMs = now;
-        if (!held && holdSinceMs != 0) { holdMs += now - holdSinceMs; holdSinceMs = 0; }
+        int line = best < program.size() && best >= 0 ? program.get(best).editorLine + 1 : ackedLines;
+        if (held && holdSinceMs == 0) {
+            holdSinceMs = now;
+            String why;
+            if (pauseLine >= 0) {
+                String c = pauseComment(program.get(pauseLine).editorLine);
+                why = "program pause (M0)" + (c.isEmpty() ? "" : ": " + c);
+            } else if (machineState.startsWith("Door")) {
+                why = "safety door";
+            } else {
+                why = "feed hold from the " + holdSource;
+            }
+            jobLog.event(currentJob, "paused", line, why);
+            if (jobsSection != null) jobsSection.refresh();
+            holdSource = "tablet";
+        }
+        if (!held && holdSinceMs != 0) {
+            long paused = now - holdSinceMs;
+            holdMs += paused;
+            holdSinceMs = 0;
+            jobLog.event(currentJob, "resumed", line, "after " + hms(paused / 1000));
+            if (jobsSection != null) jobsSection.refresh();
+        }
         updateProgress();
         preview.setDoneLine(best - 1);
         if (best < program.size()) {
@@ -1069,26 +1186,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             return null;
         }
         try {
-            Uri uri;
-            if (Build.VERSION.SDK_INT >= 29) {
-                ContentValues v = new ContentValues();
-                v.put(MediaStore.MediaColumns.DISPLAY_NAME, SAMPLE_NAME);
-                v.put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream");
-                v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/" + SAMPLE_DIR);
-                uri = getContentResolver().insert(MediaStore.Files.getContentUri("external"), v);
-                if (uri == null) throw new Exception("MediaStore insert returned null");
-                try (OutputStream os = getContentResolver().openOutputStream(uri, "w")) {
-                    os.write(text.getBytes(StandardCharsets.UTF_8));
-                }
-            } else {
-                File dir = new File(getExternalFilesDir(null), SAMPLE_DIR);
-                dir.mkdirs();
-                File f = new File(dir, SAMPLE_NAME);
-                try (OutputStream os = new FileOutputStream(f)) {
-                    os.write(text.getBytes(StandardCharsets.UTF_8));
-                }
-                uri = Uri.fromFile(f);
-            }
+            Uri uri = saveLocalFile(SAMPLE_NAME, text.getBytes(StandardCharsets.UTF_8));
             log("Created test file Documents/" + SAMPLE_DIR + "/" + SAMPLE_NAME);
             return uri;
         } catch (Exception e) {
@@ -1252,7 +1350,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             } catch (Exception ignored) { }
         }
         if (requestCode == REQ_OPEN_FILE) {
-            loadDocument(uri, true);
+            if (loadDocument(uri, true) && page != NAV_CONTROL) showPage(NAV_CONTROL);
         } else if (requestCode == REQ_FIRMWARE) {
             try (InputStream in = getContentResolver().openInputStream(uri)) {
                 if (blue()) {
@@ -1308,11 +1406,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     // ---------------------------------------------------------------- Firmware update page
 
     private String fwVersion, fwOptions;          // from Grbl's $I report
-    private android.app.Dialog fwDialog;
+    private View fwDialog;                       // the Firmware section while it is shown
     private TextView fwInstalled, fwStatus;
     private ProgressBar fwBar;
     private android.widget.ListView fwList;
-    private Button fwFlashBtn, fwRefreshBtn, fwFileBtn, fwCloseBtn;
+    private Button fwFlashBtn, fwRefreshBtn, fwFileBtn;
     private final List<org.json.JSONObject> fwItems = new ArrayList<>();
     private int fwSelected = -1;
     private boolean fwBusy;
@@ -1342,8 +1440,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void applyBoardToUi() {
         if (boardIsBlue()) {
             baudSpinner.setEnabled(false);
+            baudSpinner.setVisibility(View.GONE);
         } else {
             baudSpinner.setEnabled(port == null);
+            baudSpinner.setVisibility(View.VISIBLE);
         }
     }
 
@@ -1354,9 +1454,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     }
     private boolean blue() { return "bluepill".equals(fwTarget); }
 
-    /** Full-screen page: installed firmware, list of builds on the backoffice, download + flash with progress. */
-    private void showFirmwareMenu(String target) {
-        if (streaming) { log("Stop the running job before updating the firmware"); return; }
+    /** Settings → Firmware: installed firmware, list of builds on the backoffice, download + flash with progress. */
+    private View buildFirmwarePage(String target) {
         fwTarget = target;
         fwItems.clear();
         fwSelected = -1;
@@ -1364,15 +1463,22 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         int pad = (int) (16 * dp);
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
         root.setOrientation(android.widget.LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(0xFF1D2024);
-
-        TextView title = new TextView(this);
-        title.setText(blue() ? "(B) STM32F103C8T6 Blue / Black Pill firmware" : "(A) Arduino Pro Mini firmware");
-        title.setTextSize(22);
-        title.setTextColor(0xFFE3E6EA);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        root.addView(title);
+        LinearLayout head = Ui.row(this);
+        head.addView(Ui.heading(this, "Firmware update", blue() ? "(B) STM32F103C8T6 Blue / Black Pill – Grbl 1.1f over USB DFU"
+                : "(A) Arduino Pro Mini – Grbl 1.1h over the Arduino bootloader"), Ui.weight(1));
+        for (String b : new String[]{BOARD_PROMINI, BOARD_BLUEPILL}) {
+            Button t = Ui.button(this, BOARD_BLUEPILL.equals(b) ? "(B) Blue / Black Pill" : "(A) Pro Mini", b.equals(target) ? 1 : 0);
+            t.setOnClickListener(v -> { if (!fwBusy && !b.equals(fwTarget)) showSection(SEC_FIRMWARE, b); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMarginStart(Ui.dp(this, 8));
+            head.addView(t, lp);
+        }
+        root.addView(head);
+        if (streaming) {
+            TextView busy = Ui.text(this, "A job is running – flashing is disabled until it ends.", 14, Ui.WARN);
+            busy.setPadding(0, 0, 0, Ui.dp(this, 8));
+            root.addView(busy);
+        }
 
         fwInstalled = new TextView(this);
         fwInstalled.setTextColor(0xFFB8E0B8);
@@ -1392,13 +1498,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             root.addView(how);
         }
         TextView hdr = new TextView(this);
-        hdr.setText("Available on the backoffice (" + BuildConfig.LOG_SERVER + ")");
+        hdr.setText("Available on the backoffice (" + RemoteLog.server() + ")");
         hdr.setTextColor(0xFF8B939C);
         root.addView(hdr);
 
         fwList = new android.widget.ListView(this);
         fwList.setChoiceMode(android.widget.ListView.CHOICE_MODE_SINGLE);
-        fwList.setBackgroundColor(0xFF111316);
+        fwList.setBackgroundResource(R.drawable.dro_bg);
         fwList.setDividerHeight((int) dp);
         root.addView(fwList, new android.widget.LinearLayout.LayoutParams(
                 android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -1422,7 +1528,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 }
                 org.json.JSONObject f = fwItems.get(i);
                 boolean sel = i == fwSelected;
-                row.setBackgroundColor(sel ? 0xFF24476E : 0x00000000);
+                row.setBackgroundColor(sel ? 0x2200E5FF : 0x00000000);
                 TextView name = (TextView) row.getChildAt(0);
                 name.setTextColor(sel ? 0xFFFFFFFF : 0xFFE3E6EA);
                 name.setText((sel ? "● " : "○ ") + (i == 0 ? "★ " : "") + f.optString("name"));
@@ -1455,15 +1561,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         fwRefreshBtn.setText("Refresh");
         fwFileBtn = new Button(this);
         fwFileBtn.setText("From file…");
-        fwCloseBtn = new Button(this);
-        fwCloseBtn.setText("Close");
-        fwFlashBtn = new Button(this);
-        fwFlashBtn.setText("⬇ Download & Flash");
-        fwFlashBtn.setTextColor(0xFF4CD07D);
-        for (Button b : new Button[]{fwRefreshBtn, fwFileBtn, fwCloseBtn, fwFlashBtn}) {
+        fwFlashBtn = Ui.button(this, "⬇ Download & Flash", 2);
+        for (Button b : new Button[]{fwRefreshBtn, fwFileBtn, fwFlashBtn}) {
             b.setAllCaps(false);
-            buttons.addView(b, new android.widget.LinearLayout.LayoutParams(0,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, b == fwFlashBtn ? 1.6f : 1f));
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(0,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, b == fwFlashBtn ? 1.6f : 1f);
+            lp.setMarginEnd(b == fwFlashBtn ? 0 : Ui.dp(this, 8));
+            buttons.addView(b, lp);
         }
         root.addView(buttons);
 
@@ -1474,19 +1578,14 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             intent.setType("*/*");
             startActivityForResult(intent, REQ_FIRMWARE);
         });
-        fwCloseBtn.setOnClickListener(v -> { if (!fwBusy) fwDialog.dismiss(); });
         fwFlashBtn.setOnClickListener(v -> {
             if (fwSelected >= 0 && fwSelected < fwItems.size()) downloadFirmware(fwItems.get(fwSelected));
         });
 
-        fwDialog = new android.app.Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
-        fwDialog.setContentView(root);
-        fwDialog.setOnKeyListener((d, key, ev) -> key == KeyEvent.KEYCODE_BACK && fwBusy);   // no Back while flashing
-        fwDialog.setOnDismissListener(d -> fwDialog = null);
-        fwDialog.show();
-
+        fwDialog = root;
         if (port != null) queueSilent("$I");            // refresh the "installed" line
         loadFirmwareList();
+        return root;
     }
 
     private void updateInstalledText() {
@@ -1516,7 +1615,6 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         fwFlashBtn.setEnabled(canFlash && fwSelected >= 0);
         fwFileBtn.setEnabled(canFlash);
         fwRefreshBtn.setEnabled(!fwBusy);
-        fwCloseBtn.setEnabled(!fwBusy);
         fwList.setEnabled(!fwBusy);
         if (!fwBusy && !blue() && pendingDriver == null) fwStatus.setText("Connect to the Arduino first – flashing needs its USB device.");
     }
@@ -1903,26 +2001,409 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }, "flash").start();
     }
 
-    private void showMenu(View anchor) {
-        android.widget.PopupMenu m = new android.widget.PopupMenu(this, anchor);
-        m.getMenu().add(0, 3, 0, "App update…" + (updateCode > BuildConfig.VERSION_CODE ? "  ●" : ""));
-        m.getMenu().add(0, 5, 1, "Settings…");
-        m.getMenu().add(0, 2, 2, "Firmware update – Arduino Pro Mini…" + (boardIsBlue() ? "" : "  ✓"));
-        m.getMenu().add(0, 4, 2, "Firmware update – STM32F103C8T6 Blue / Black Pill…" + (boardIsBlue() ? "  ✓" : ""));
-        m.getMenu().add(0, 6, 3, "Wiring…");
-        m.getMenu().add(0, 7, 4, "CNC setup…");
-        m.getMenu().add(0, 1, 5, "About");
-        m.setOnMenuItemClickListener(item -> {
-            if (item.getItemId() == 1) showAbout();
-            if (item.getItemId() == 5) showSettings();
-            if (item.getItemId() == 6) setupPages().showWiring();
-            if (item.getItemId() == 7) setupPages().showCncSetup();
-            if (item.getItemId() == 2) showFirmwareMenu(BOARD_PROMINI);
-            if (item.getItemId() == 4) showFirmwareMenu(BOARD_BLUEPILL);
-            if (item.getItemId() == 3) showUpdatePage();
-            return true;
+    // ---------------------------------------------------------------- Navigation: rail, pages, settings sections
+
+    static final int SEC_GENERAL = 0, SEC_FIRMWARE = 1, SEC_UPDATE = 2, SEC_FILES = 3, SEC_JOBS = 4, SEC_DEBUG = 5;
+    private static final String[] SEC_NAMES = {"General", "Firmware", "App update", "Files", "Job log", "Debug console"};
+    private static final String[] SEC_ICONS = {"general", "firmware", "update", "files", "jobs", "debug"};
+    private final LinearLayout[] secItems = new LinearLayout[SEC_NAMES.length];
+    private FrameLayout secContent;
+    private int section = -1;
+    private Runnable settingsLeave;              // detaches the section being shown
+
+    private void buildNavRail() {
+        LinearLayout rail = findViewById(R.id.navRail);
+        String[] icons = {"control", "settings", "wiring", "setup", "about"};
+        String[] labels = {"Control", "Settings", "Wiring", "CNC setup", "About"};
+        for (int i = 0; i < icons.length; i++) {
+            if (i == NAV_ABOUT) rail.addView(new View(this), new LinearLayout.LayoutParams(1, 0, 1f));
+            LinearLayout item = Ui.navItem(this, icons[i], labels[i], true);
+            final int target = i;
+            item.setOnClickListener(v -> showPage(target));
+            rail.addView(item, Ui.margins(this, 0, 0, 0, 6));
+            navItems[i] = item;
+        }
+        Ui.setNavSelected(navItems[NAV_CONTROL], true);
+    }
+
+    private void showPage(int p) {
+        if (p == NAV_WIRING) { setupPages().showWiring(); return; }
+        if (p == NAV_SETUP) { setupPages().showCncSetup(); return; }
+        if (p == NAV_ABOUT) { showAbout(); return; }
+        page = p;
+        for (int i = 0; i < navItems.length; i++) Ui.setNavSelected(navItems[i], i == p);
+        pageControl.setVisibility(p == NAV_CONTROL ? View.VISIBLE : View.GONE);
+        pageSettings.setVisibility(p == NAV_SETTINGS ? View.VISIBLE : View.GONE);
+        if (p == NAV_SETTINGS) {
+            buildSettingsShell();
+            if (section < 0) showSection(SEC_GENERAL, null);
+        }
+        if (p == NAV_CONTROL) {
+            View focus = getCurrentFocus();
+            if (focus != null) ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                    .hideSoftInputFromWindow(focus.getWindowToken(), 0);
+        }
+    }
+
+    private void openSettings(int sec) {
+        showPage(NAV_SETTINGS);
+        showSection(sec, null);
+    }
+
+    /** Settings page: section list on the left, the chosen section on the right. */
+    private void buildSettingsShell() {
+        if (secContent != null) return;
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setBackgroundColor(0xFF0E141B);
+        int p = Ui.dp(this, 10);
+        list.setPadding(p, p, p, p);
+        TextView hdr = Ui.label(this, "Settings");
+        hdr.setPadding(Ui.dp(this, 8), Ui.dp(this, 4), 0, Ui.dp(this, 8));
+        list.addView(hdr);
+        for (int i = 0; i < SEC_NAMES.length; i++) {
+            LinearLayout item = Ui.navItem(this, SEC_ICONS[i], SEC_NAMES[i], false);
+            final int sec = i;
+            item.setOnClickListener(v -> showSection(sec, null));
+            list.addView(item, Ui.margins(this, 0, 0, 0, 4));
+            secItems[i] = item;
+        }
+        root.addView(list, new LinearLayout.LayoutParams(Ui.dp(this, 210), LinearLayout.LayoutParams.MATCH_PARENT));
+        View div = new View(this);
+        div.setBackgroundColor(Ui.BORDER);
+        root.addView(div, new LinearLayout.LayoutParams(1, LinearLayout.LayoutParams.MATCH_PARENT));
+        secContent = new FrameLayout(this);
+        int cp = Ui.dp(this, 16);
+        secContent.setPadding(cp, Ui.dp(this, 12), cp, Ui.dp(this, 12));
+        root.addView(secContent, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+        pageSettings.addView(root);
+        updateNavBadge();
+    }
+
+    private void showSection(int sec, String arg) {
+        buildSettingsShell();
+        if (fwBusy && section == SEC_FIRMWARE) {
+            android.widget.Toast.makeText(this, "Flashing – wait until it has finished", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (settingsLeave != null) { settingsLeave.run(); settingsLeave = null; }
+        section = sec;
+        for (int i = 0; i < secItems.length; i++) Ui.setNavSelected(secItems[i], i == sec);
+        View v;
+        switch (sec) {
+            case SEC_FIRMWARE:
+                v = buildFirmwarePage(arg != null ? arg : board());
+                settingsLeave = () -> { fwDialog = null; fwInstalled = null; };
+                break;
+            case SEC_UPDATE:
+                v = buildUpdatePage();
+                settingsLeave = () -> { updDialog = null; updStatus = null; };
+                break;
+            case SEC_FILES: {
+                FilesSection fs = new FilesSection(this, filesHost, worker);
+                v = fs.build();
+                settingsLeave = fs::detach;
+                break;
+            }
+            case SEC_JOBS: {
+                JobsSection js = new JobsSection(this, jobLog);
+                v = js.build();
+                jobsSection = js;
+                settingsLeave = () -> { js.detach(); jobsSection = null; };
+                break;
+            }
+            case SEC_DEBUG: {
+                DebugSection ds = new DebugSection(this, this::linkSummary);
+                v = ds.build();
+                settingsLeave = ds::detach;
+                break;
+            }
+            default:
+                v = buildGeneralPage();
+                settingsLeave = () -> setDialog = null;
+        }
+        secContent.removeAllViews();
+        secContent.addView(v, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+    }
+
+    private JobsSection jobsSection;
+
+    private void updateNavBadge() {
+        boolean upd = updateCode > BuildConfig.VERSION_CODE;
+        if (navItems[NAV_SETTINGS] != null) ((TextView) navItems[NAV_SETTINGS].getChildAt(1)).setText(upd ? "Settings ●" : "Settings");
+        if (secItems[SEC_UPDATE] != null) ((TextView) secItems[SEC_UPDATE].getChildAt(1)).setText(upd ? "App update  ●" : "App update");
+    }
+
+    private final FilesSection.Host filesHost = new FilesSection.Host() {
+        @Override public void openLocal(Uri uri) {
+            confirmDiscard(() -> { if (loadDocument(uri, true)) showPage(NAV_CONTROL); });
+        }
+        @Override public void openRemote(String name) {
+            confirmDiscard(() -> remoteOpen(name, () -> showPage(NAV_CONTROL), err -> {
+                log("Could not open " + name + " from the backoffice: " + err);
+                android.widget.Toast.makeText(MainActivity.this, err, android.widget.Toast.LENGTH_LONG).show();
+            }));
+        }
+        @Override public void browse() { confirmDiscard(MainActivity.this::openFile); }
+        @Override public boolean busy() { return streaming; }
+    };
+
+    // ---------------------------------------------------------------- Title bar status chips
+
+    private boolean remoteControlAllowed() { return getPreferences(MODE_PRIVATE).getBoolean("remoteControl", true); }
+
+    private void updateChips() {
+        if (chipUsb == null) return;
+        String boardShort = boardIsBlue() ? "Blue Pill" : "Pro Mini";
+        if (port != null) Ui.setChip(chipUsb, boardShort, Ui.OK);
+        else if (opening) Ui.setChip(chipUsb, "Opening…", Ui.WARN);
+        else Ui.setChip(chipUsb, boardShort + " · off", Ui.MUTED);
+        if (port == null) {
+            chipMachine.setVisibility(View.GONE);
+        } else {
+            chipMachine.setVisibility(View.VISIBLE);
+            String st = machineState.isEmpty() ? "Connected" : machineState;
+            Ui.setChip(chipMachine, st + (streaming ? " ▶" : ""), stateColor(st));
+        }
+        boolean online = remote != null && remote.isOnline();
+        Ui.setChip(chipCloud, online ? "Backoffice" : "Offline", online ? Ui.OK : Ui.ERR);
+        Ui.setChip(chipRemote, remoteControlAllowed() ? "Remote" : "Remote off", remoteControlAllowed() ? Ui.ACCENT : Ui.MUTED);
+    }
+
+    private static int stateColor(String st) {
+        if (st.startsWith("Alarm")) return Ui.ERR;
+        if (st.startsWith("Hold") || st.startsWith("Door")) return Ui.WARN;
+        if (st.startsWith("Run") || st.startsWith("Jog")) return Ui.RUN;
+        return Ui.OK;
+    }
+
+    /** Big work-position readout with coloured axis letters. */
+    private static CharSequence dro(float[] w) {
+        android.text.SpannableStringBuilder b = new android.text.SpannableStringBuilder();
+        String[] ax = {"X", "Y", "Z"};
+        int[] colors = {Ui.AX_X, Ui.AX_Y, Ui.AX_Z};
+        for (int i = 0; i < 3; i++) {
+            if (i > 0) b.append('\n');
+            int s = b.length();
+            b.append(ax[i]);
+            b.setSpan(new android.text.style.ForegroundColorSpan(colors[i]), s, b.length(), 0);
+            b.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), s, b.length(), 0);
+            b.append(String.format(Locale.US, " %9.3f", w[i]));
+        }
+        return b;
+    }
+
+    /** Live status for the backoffice (sent with the next sync); throttled to 4 per second unless forced. */
+    private void publishStatus(boolean force) {
+        if (remote == null) return;
+        long now = System.currentTimeMillis();
+        if (!force && now - lastPublishMs < 250) return;
+        lastPublishMs = now;
+        try {
+            org.json.JSONObject o = new org.json.JSONObject()
+                    .put("connected", port != null)
+                    .put("usb", port != null && pendingDriver != null ? describe(pendingDriver) : null)
+                    .put("board", board())
+                    .put("boardName", boardName(board()))
+                    .put("machine", machineState)
+                    .put("wpos", new org.json.JSONArray().put(wpos[0]).put(wpos[1]).put(wpos[2]))
+                    .put("mpos", new org.json.JSONArray().put(mpos[0]).put(mpos[1]).put(mpos[2]))
+                    .put("streaming", streaming)
+                    .put("paused", holdSinceMs != 0)
+                    .put("file", docName)
+                    .put("dirty", dirty)
+                    .put("loaded", job != null)
+                    .put("lines", program.size())
+                    .put("acked", ackedLines)
+                    .put("permille", program.isEmpty() ? 0 : streaming ? 1000L * ackedLines / program.size() : progress.getProgress())
+                    .put("elapsedSec", streaming ? (now - jobStartMs) / 1000 : 0)
+                    .put("estSec", job != null ? Math.round(job.estSeconds) : 0)
+                    .put("errors", errorCount)
+                    .put("jobId", currentJob != null ? currentJob.id : null)
+                    .put("fw", fwVersion)
+                    .put("remoteControl", remoteControlAllowed())
+                    .put("app", BuildConfig.VERSION_NAME);
+            if (streaming && etaSec >= 0) o.put("etaSec", etaSec);
+            remote.setStatus(o);
+        } catch (org.json.JSONException ignored) { }
+    }
+
+    /** One-screen summary of both links for the Debug console. */
+    private String linkSummary() {
+        long now = System.currentTimeMillis();
+        StringBuilder b = new StringBuilder();
+        b.append("Backoffice  ").append(RemoteLog.server()).append("  ");
+        if (remote.isOnline()) b.append("ONLINE · last sync ").append((now - remote.lastOkMs()) / 1000).append(" s ago");
+        else b.append("OFFLINE").append(remote.lastError() != null ? " · " + remote.lastError() : "");
+        b.append("\nRemote      ").append(remoteControlAllowed() ? "control allowed" : "control off – status, Hold and Stop only");
+        b.append("\nCNC         ");
+        if (port == null) b.append("not connected · ").append(boardName(board()));
+        else {
+            b.append(pendingDriver != null ? describe(pendingDriver) : "?").append(" · ").append(boardName(board()))
+                    .append(fwVersion != null ? " · Grbl " + fwVersion : "")
+                    .append(" · ").append(machineState.isEmpty() ? "no status yet" : machineState)
+                    .append(" · last status ").append(now - lastStatusMs).append(" ms ago");
+        }
+        return b.toString();
+    }
+
+    // ---------------------------------------------------------------- Remote commands (from the backoffice)
+
+    private void remoteExecute(org.json.JSONObject c, RemoteControl.Result r) {
+        String cmd = c.optString("cmd");
+        boolean safe = cmd.equals("hold") || cmd.equals("stop") || cmd.equals("status");
+        if (!safe && !remoteControlAllowed()) {
+            r.done(false, "remote control is switched off on the tablet (Settings → General)");
+            return;
+        }
+        if (!cmd.equals("status")) {
+            log("☁ Remote " + cmd + (c.has("file") ? " " + c.optString("file") : "") + (c.has("line") ? " " + c.optString("line") : "")
+                    + (c.has("axes") ? " " + c.optString("axes") : ""));
+        }
+        if (!cmd.equals("status") && !cmd.equals("load") && port == null) {
+            r.done(false, "the controller is not connected to the tablet");
+            return;
+        }
+        switch (cmd) {
+            case "status":
+                r.done(true, linkSummary().replace("\n", " | "));
+                return;
+            case "hold":
+                feedHold("backoffice");
+                r.done(true, "feed hold sent" + (streaming ? " at line " + ackedLines + " / " + program.size() : ""));
+                return;
+            case "resume":
+                writeRaw(new byte[]{'~'});
+                r.done(true, "resume sent");
+                return;
+            case "stop":
+                if (streaming) {
+                    int at = ackedLines;
+                    stopJob("backoffice");
+                    r.done(true, "job stopped at line " + at + " / " + program.size() + " – unlock with $X");
+                } else {
+                    softReset();
+                    r.done(true, "no job running – soft reset sent");
+                }
+                return;
+            case "reset":
+                if (streaming) { endResult = "stopped"; endDetail = "reset from the backoffice"; }
+                softReset();
+                r.done(true, "soft reset sent");
+                return;
+            default:
+        }
+        if (streaming && !cmd.equals("send")) {
+            r.done(false, "a job is running – only hold, resume and stop are accepted");
+            return;
+        }
+        switch (cmd) {
+            case "unlock":
+                queueCommand("$X");
+                r.done(true, "$X sent");
+                return;
+            case "home":
+                queueCommand("$H");
+                r.done(true, "$H sent – homing");
+                return;
+            case "zero": {
+                String axes = c.optString("axes", "XY").toUpperCase(Locale.US);
+                StringBuilder g = new StringBuilder("G10L20P1");
+                for (char a : new char[]{'X', 'Y', 'Z'}) if (axes.indexOf(a) >= 0) g.append(a).append('0');
+                if (g.length() == 8) { r.done(false, "axes must contain X, Y and/or Z"); return; }
+                queueCommand(g.toString());
+                r.done(true, g + " sent – work zero set");
+                return;
+            }
+            case "send": {
+                String line = c.optString("line").trim();
+                if (line.isEmpty()) { r.done(false, "empty line"); return; }
+                if (line.equals("!")) { feedHold("backoffice"); r.done(true, "feed hold sent"); return; }
+                if (line.equals("~")) { writeRaw(new byte[]{'~'}); r.done(true, "resume sent"); return; }
+                if (line.equals("?")) { r.done(true, linkSummary().replace("\n", " | ")); return; }
+                if (streaming) { r.done(false, "a job is running – only !, ~ and ? are accepted"); return; }
+                queueCommand(line.toUpperCase(Locale.US));
+                r.done(true, "sent " + line.toUpperCase(Locale.US) + " – the reply shows in the console");
+                return;
+            }
+            case "load":
+            case "run": {
+                boolean run = cmd.equals("run");
+                if (run && machineState.startsWith("Alarm")) { r.done(false, "Grbl is in ALARM – unlock ($X) or home first"); return; }
+                String file = c.optString("file", "").trim();
+                Runnable parse = () -> {
+                    if (docLength() == 0) { r.done(false, "the editor on the tablet is empty – load a file"); return; }
+                    load(() -> {
+                        if (program.isEmpty()) { r.done(false, "no G-code lines in " + docName); return; }
+                        String what = (docName != null ? docName : "untitled") + ": " + program.size() + " lines, est. "
+                                + hms(Math.round(job.estSeconds));
+                        if (!run) { r.done(true, "loaded " + what); return; }
+                        if (port == null || streaming) { r.done(false, port == null ? "not connected" : "already running"); return; }
+                        jobSource = "backoffice";
+                        startJob();
+                        r.done(true, "started " + what);
+                    });
+                };
+                if (file.isEmpty()) { parse.run(); return; }
+                if (dirty) { r.done(false, "the editor on the tablet has unsaved changes – save or close them first"); return; }
+                remoteOpen(file, parse, err -> r.done(false, err));
+                return;
+            }
+            default:
+                r.done(false, "unknown command " + cmd);
+        }
+    }
+
+    interface ErrorCallback { void onError(String msg); }
+
+    /** Download a G-code file from the backoffice, save it to Documents/GrblSender and open it in the editor. */
+    private void remoteOpen(String name, Runnable onOpened, ErrorCallback onError) {
+        log("Downloading " + name + " from the backoffice…");
+        worker.execute(() -> {
+            try {
+                byte[] data = RemoteLog.getBytes("/gcode/" + Uri.encode(name));
+                Uri uri = saveLocalFile(name, data);
+                DebugLog.srv("Downloaded " + name + " (" + data.length + " bytes) to Documents/" + SAMPLE_DIR);
+                ui.post(() -> {
+                    if (streaming) { onError.onError("a job started meanwhile"); return; }
+                    if (loadDocument(uri, true)) onOpened.run();
+                    else onError.onError("downloaded, but the file could not be opened");
+                });
+            } catch (Exception e) {
+                DebugLog.srvErr("Download of " + name + " failed: " + e.getMessage());
+                ui.post(() -> onError.onError("download failed: " + e.getMessage()));
+            }
         });
-        m.show();
+    }
+
+    /** Write {@code data} to Documents/GrblSender/{@code name} (replacing the app's own copy). Off the UI thread. */
+    private Uri saveLocalFile(String name, byte[] data) throws Exception {
+        if (Build.VERSION.SDK_INT >= 29) {
+            Uri uri = null;
+            for (FilesSection.LocalFile f : FilesSection.listLocal(this)) if (f.name.equals(name)) { uri = f.uri; break; }
+            if (uri == null) {
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                v.put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream");
+                v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/" + SAMPLE_DIR);
+                uri = getContentResolver().insert(MediaStore.Files.getContentUri("external"), v);
+                if (uri == null) throw new java.io.IOException("MediaStore insert returned null");
+            }
+            try (OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
+                if (os == null) throw new java.io.IOException("cannot write " + name);
+                os.write(data);
+            }
+            return uri;
+        }
+        File dir = new File(getExternalFilesDir(null), SAMPLE_DIR);
+        dir.mkdirs();
+        File f = new File(dir, name);
+        try (OutputStream os = new FileOutputStream(f)) {
+            os.write(data);
+        }
+        return Uri.fromFile(f);
     }
 
     // ---------------------------------------------------------------- Wiring and CNC setup pages
@@ -1941,7 +2422,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     // ---------------------------------------------------------------- Settings page
 
-    private android.app.Dialog setDialog;
+    private View setDialog;                      // the General section while it is shown
     private TextView setProfile, setLatest, setInstalled;
     private org.json.JSONObject setLatestBuild;
     private String setLatestError;
@@ -1964,29 +2445,29 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 + "Pins: spindle on/off D13 · PWM D11 · step D2–D4 · dir D5–D7 · enable D8 · limits D9/D10/D12 · probe A5";
     }
 
-    /** Settings: choose the controller board (Pro Mini or Blue Pill) and see its firmware. */
-    private void showSettings() {
-        float dp = getResources().getDisplayMetrics().density;
-        int pad = (int) (16 * dp);
-        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
-        root.setOrientation(android.widget.LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(0xFF1D2024);
+    /** Settings → General: controller board, backoffice server, remote control. */
+    private View buildGeneralPage() {
+        int gap = Ui.dp(this, 10);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(root);
+        root.addView(Ui.heading(this, "General", "Grbl Sender " + BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ") · built " + BuildConfig.BUILD_TIME));
 
-        TextView title = new TextView(this);
-        title.setText("Settings");
-        title.setTextSize(22);
-        title.setTextColor(0xFFE3E6EA);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        root.addView(title);
+        LinearLayout cols = new LinearLayout(this);
+        cols.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout left = new LinearLayout(this), right = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        right.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+        lp.setMarginEnd(gap);
+        cols.addView(left, lp);
+        cols.addView(right, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(cols);
 
-        TextView boardHdr = new TextView(this);
-        boardHdr.setText("Controller board");
-        boardHdr.setTextSize(17);
-        boardHdr.setTextColor(0xFFE3E6EA);
-        boardHdr.setPadding(0, pad, 0, (int) (4 * dp));
-        root.addView(boardHdr);
-
+        // ---- controller board
+        LinearLayout boardCard = Ui.card(this);
+        boardCard.addView(Ui.label(this, "Controller board"));
         android.widget.RadioGroup group = new android.widget.RadioGroup(this);
         android.widget.RadioButton rbPro = new android.widget.RadioButton(this);
         rbPro.setId(View.generateViewId());
@@ -1995,56 +2476,76 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         rbBlue.setId(View.generateViewId());
         rbBlue.setText("(B) STM32F103C8T6 Blue / Black Pill – Grbl 1.1f, native USB");
         for (android.widget.RadioButton rb : new android.widget.RadioButton[]{rbPro, rbBlue}) {
-            rb.setTextColor(0xFFE3E6EA);
-            rb.setTextSize(16);
+            rb.setTextColor(Ui.TEXT);
+            rb.setTextSize(15);
             group.addView(rb);
         }
         group.check(boardIsBlue() ? rbBlue.getId() : rbPro.getId());
-        root.addView(group);
+        boardCard.addView(group);
+        TextView note = Ui.text(this, "Connect opens this board's USB device and Firmware offers its builds. "
+                + "A change takes effect at the next Connect.", 12, Ui.MUTED);
+        note.setPadding(0, Ui.dp(this, 4), 0, 0);
+        boardCard.addView(note);
+        left.addView(boardCard, Ui.margins(this, 0, 0, 0, 10));
 
-        TextView note = new TextView(this);
-        note.setTextColor(0xFF8B939C);
-        note.setText("Connect opens this board's USB device; ✓ marks its Firmware update entry in the ☰ menu. "
-                + "Changing the board takes effect at the next Connect.");
-        note.setPadding(0, (int) (4 * dp), 0, pad);
-        root.addView(note);
+        LinearLayout fwCard = Ui.card(this);
+        fwCard.addView(Ui.label(this, "Selected firmware"));
+        setProfile = Ui.text(this, "", 13, 0xFFC8CDD3);
+        setLatest = Ui.text(this, "", 13, 0xFFB8D0F0);
+        setLatest.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 8));
+        setInstalled = Ui.text(this, "", 13, 0xFFB8E0B8);
+        fwCard.addView(setProfile);
+        fwCard.addView(setLatest);
+        fwCard.addView(setInstalled);
+        Button fwBtn = Ui.button(this, "Firmware update…", 1);
+        fwCard.addView(fwBtn, Ui.margins(this, 0, 10, 0, 0));
+        left.addView(fwCard);
 
-        TextView fwHdr = new TextView(this);
-        fwHdr.setText("Selected firmware");
-        fwHdr.setTextSize(17);
-        fwHdr.setTextColor(0xFFE3E6EA);
-        root.addView(fwHdr);
-
-        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-        android.widget.LinearLayout info = new android.widget.LinearLayout(this);
-        info.setOrientation(android.widget.LinearLayout.VERTICAL);
-        setProfile = new TextView(this);
-        setProfile.setTextColor(0xFFC8CDD3);
-        setProfile.setPadding(0, (int) (4 * dp), 0, (int) (8 * dp));
-        setLatest = new TextView(this);
-        setLatest.setTextColor(0xFFB8D0F0);
-        setLatest.setPadding(0, 0, 0, (int) (8 * dp));
-        setInstalled = new TextView(this);
-        setInstalled.setTextColor(0xFFB8E0B8);
-        info.addView(setProfile);
-        info.addView(setLatest);
-        info.addView(setInstalled);
-        scroll.addView(info);
-        root.addView(scroll, new android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        android.widget.LinearLayout buttons = new android.widget.LinearLayout(this);
-        buttons.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-        Button fwBtn = new Button(this);
-        fwBtn.setText("Firmware update…");
-        Button closeBtn = new Button(this);
-        closeBtn.setText("Close");
-        for (Button btn : new Button[]{fwBtn, closeBtn}) {
-            btn.setAllCaps(false);
-            buttons.addView(btn, new android.widget.LinearLayout.LayoutParams(0,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        // ---- backoffice server
+        LinearLayout srvCard = Ui.card(this);
+        srvCard.addView(Ui.label(this, "Backoffice server"));
+        EditText url = new EditText(this);
+        url.setSingleLine(true);
+        url.setText(RemoteLog.server());
+        url.setTextColor(Ui.TEXT);
+        url.setTypeface(android.graphics.Typeface.MONOSPACE);
+        url.setBackgroundResource(R.drawable.input_bg);
+        url.setPadding(Ui.dp(this, 10), Ui.dp(this, 8), Ui.dp(this, 10), Ui.dp(this, 8));
+        url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        url.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        srvCard.addView(url);
+        LinearLayout srvBtns = Ui.row(this);
+        Button save = Ui.button(this, "Save", 1);
+        Button test = Ui.button(this, "Test", 0);
+        Button def = Ui.button(this, "Default", 0);
+        for (Button bt : new Button[]{save, test, def}) {
+            LinearLayout.LayoutParams bp = Ui.weight(1);
+            bp.setMarginEnd(bt == def ? 0 : Ui.dp(this, 8));
+            srvBtns.addView(bt, bp);
         }
-        root.addView(buttons);
+        srvCard.addView(srvBtns, Ui.margins(this, 0, 8, 0, 0));
+        TextView srvStatus = Ui.text(this, "Logs, app and firmware updates, G-code files, job log and remote control all use this server.", 12, Ui.MUTED);
+        srvStatus.setPadding(0, Ui.dp(this, 8), 0, 0);
+        srvCard.addView(srvStatus);
+        right.addView(srvCard, Ui.margins(this, 0, 0, 0, 10));
+
+        // ---- remote control
+        LinearLayout rcCard = Ui.card(this);
+        rcCard.addView(Ui.label(this, "Remote control"));
+        android.widget.Switch allow = new android.widget.Switch(this);
+        allow.setText("Allow the backoffice to run, resume, load and send commands");
+        allow.setTextColor(Ui.TEXT);
+        allow.setTextSize(15);
+        allow.setChecked(remoteControlAllowed());
+        rcCard.addView(allow);
+        TextView rcNote = Ui.text(this, "Live status, the console and the job log are always shared. Hold and Stop from the "
+                + "backoffice always work, since they only make the machine safer. Keep someone at the machine when a job is "
+                + "started remotely.\n\nDashboard: " + RemoteLog.server() + "/cnc\nHTTP API: " + RemoteLog.server()
+                + "/api/cnc (dashboard login or Bearer CNC_API_KEY)", 12, Ui.MUTED);
+        rcNote.setPadding(0, Ui.dp(this, 6), 0, 0);
+        rcNote.setTextIsSelectable(true);
+        rcCard.addView(rcNote);
+        right.addView(rcCard);
 
         group.setOnCheckedChangeListener((g, id) -> {
             if (streaming) {
@@ -2057,17 +2558,54 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             loadLatestFirmware();
             updateSettingsInfo();
         });
-        fwBtn.setOnClickListener(v -> showFirmwareMenu(board()));
-        closeBtn.setOnClickListener(v -> setDialog.dismiss());
+        fwBtn.setOnClickListener(v -> showSection(SEC_FIRMWARE, board()));
+        Runnable doSave = () -> {
+            String u = RemoteLog.setServer(url.getText().toString());
+            url.setText(u);
+            getPreferences(MODE_PRIVATE).edit().putString("server", u).apply();
+            DebugLog.srv("Server set to " + u);
+            RemoteLog.i("settings", "server=" + u);
+            remote.restart();
+            srvStatus.setText("Saved. Now using " + u);
+            updateChips();
+        };
+        save.setOnClickListener(v -> doSave.run());
+        url.setOnEditorActionListener((v, actionId, ev) -> { doSave.run(); return false; });
+        def.setOnClickListener(v -> { url.setText(BuildConfig.LOG_SERVER); doSave.run(); });
+        test.setOnClickListener(v -> {
+            String u = url.getText().toString().trim();
+            srvStatus.setText("Testing " + u + " …");
+            worker.execute(() -> {
+                String result;
+                long t0 = System.currentTimeMillis();
+                try {
+                    String target = RemoteLog.normalize(u);
+                    String health = RemoteLog.getAbs(target + "/health");
+                    String ver = RemoteLog.getAbs(target + "/api/version");
+                    org.json.JSONObject vj = new org.json.JSONObject(ver);
+                    result = "✔ " + target + " answers in " + (System.currentTimeMillis() - t0) + " ms · " + health.trim()
+                            + "\nNewest app on it: " + vj.optString("versionName", "none") + " (build " + vj.optInt("versionCode") + ")";
+                } catch (Exception e) {
+                    result = "✖ " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                }
+                final String r = result;
+                DebugLog.srv("Connection test: " + r.replace('\n', ' '));
+                ui.post(() -> srvStatus.setText(r));
+            });
+        });
+        allow.setOnCheckedChangeListener((sw, on) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("remoteControl", on).apply();
+            log("Remote control from the backoffice " + (on ? "allowed" : "switched off"));
+            RemoteLog.i("settings", "remoteControl=" + on);
+            updateChips();
+            publishStatus(true);
+        });
 
-        setDialog = new android.app.Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
-        setDialog.setContentView(root);
-        setDialog.setOnDismissListener(d -> setDialog = null);
-        setDialog.show();
-
+        setDialog = scroll;
         if (port != null) queueSilent("$I");
         loadLatestFirmware();
         updateSettingsInfo();
+        return scroll;
     }
 
     /** Newest build of the selected board's firmware on the backoffice. */
@@ -2162,7 +2700,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private static final long UPDATE_INTERVAL_MS = 6 * 3600 * 1000L;
     private int updateCode;                       // newest versionCode seen on the backoffice
     private org.json.JSONObject updateInfo;
-    private android.app.Dialog updDialog;
+    private View updDialog;                      // the App update section while it is shown
     private TextView updStatus, updLatest;
     private android.widget.LinearLayout updHistory;
     private Button updDownloadBtn;
@@ -2179,7 +2717,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     };
 
     private void checkForUpdate(boolean manual) {
-        if (updStatus != null) updStatus.setText("Checking " + BuildConfig.LOG_SERVER + " …");
+        if (updStatus != null) updStatus.setText("Checking " + RemoteLog.server() + " …");
         worker.execute(() -> {
             org.json.JSONObject v = null;
             org.json.JSONArray history = null;
@@ -2218,29 +2756,23 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     new AlertDialog.Builder(this)
                             .setTitle("Update available")
                             .setMessage(text + ".\n\n" + v.optString("notes"))
-                            .setPositiveButton("Details", (d, w) -> showUpdatePage())
+                            .setPositiveButton("Details", (d, w) -> openSettings(SEC_UPDATE))
                             .setNegativeButton("Later", null)
                             .show();
                 }
             }
         }
+        updateNavBadge();
         if (updDialog != null) fillUpdatePage(v, history, when);
     }
 
-    private void showUpdatePage() {
+    /** Settings → App update: installed vs. newest APK on the backoffice, release history, auto-check switch. */
+    private View buildUpdatePage() {
         float dp = getResources().getDisplayMetrics().density;
         int pad = (int) (16 * dp);
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
         root.setOrientation(android.widget.LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(0xFF1D2024);
-
-        TextView title = new TextView(this);
-        title.setText("App update");
-        title.setTextSize(22);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        title.setTextColor(0xFFE3E6EA);
-        root.addView(title);
+        root.addView(Ui.heading(this, "App update", "New versions of Grbl Sender published on the backoffice"));
 
         TextView installed = new TextView(this);
         installed.setTextColor(0xFFE3E6EA);
@@ -2283,7 +2815,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         hdr.setTextColor(0xFF8B939C);
         root.addView(hdr);
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(0xFF111316);
+        sv.setBackgroundResource(R.drawable.dro_bg);
         updHistory = new android.widget.LinearLayout(this);
         updHistory.setOrientation(android.widget.LinearLayout.VERTICAL);
         updHistory.setPadding(pad / 2, pad / 2, pad / 2, pad / 2);
@@ -2292,29 +2824,20 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         android.widget.LinearLayout buttons = new android.widget.LinearLayout(this);
-        Button check = new Button(this);
-        check.setText("Check now");
-        Button close = new Button(this);
-        close.setText("Close");
-        updDownloadBtn = new Button(this);
-        updDownloadBtn.setText("⬇ Download & install");
-        updDownloadBtn.setTextColor(0xFF4CD07D);
+        Button check = Ui.button(this, "⟳ Check now", 0);
+        updDownloadBtn = Ui.button(this, "⬇ Download & install", 2);
         updDownloadBtn.setEnabled(false);
-        for (Button b : new Button[]{check, close, updDownloadBtn}) {
-            b.setAllCaps(false);
-            buttons.addView(b, new android.widget.LinearLayout.LayoutParams(0,
-                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, b == updDownloadBtn ? 1.6f : 1f));
-        }
-        root.addView(buttons);
+        android.widget.LinearLayout.LayoutParams cp = Ui.weight(1f);
+        cp.setMarginEnd(Ui.dp(this, 8));
+        buttons.addView(check, cp);
+        buttons.addView(updDownloadBtn, Ui.weight(1.6f));
+        root.addView(buttons, Ui.margins(this, 0, 8, 0, 0));
         check.setOnClickListener(v -> checkForUpdate(true));
-        close.setOnClickListener(v -> updDialog.dismiss());
         updDownloadBtn.setOnClickListener(v -> openDownload());
 
-        updDialog = new android.app.Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
-        updDialog.setContentView(root);
-        updDialog.setOnDismissListener(d -> { updDialog = null; updStatus = null; });
-        updDialog.show();
+        updDialog = root;
         checkForUpdate(true);
+        return root;
     }
 
     private void fillUpdatePage(org.json.JSONObject v, org.json.JSONArray history, String when) {
@@ -2329,7 +2852,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     + (v.optString("notes").isEmpty() ? "" : "\n" + v.optString("notes")));
             updLatest.setTextColor(newer ? 0xFF4CD07D : 0xFFB8E0B8);
         }
-        updStatus.setText("Checked " + BuildConfig.LOG_SERVER + " at " + when);
+        updStatus.setText("Checked " + RemoteLog.server() + " at " + when);
         updDownloadBtn.setEnabled(newer);
         updHistory.removeAllViews();
         if (history != null) {
@@ -2365,11 +2888,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 + "Device: " + Build.MANUFACTURER + " " + Build.MODEL + ", Android " + Build.VERSION.RELEASE
                 + " (SDK " + Build.VERSION.SDK_INT + ")\n"
                 + "Grbl link: " + (port != null ? baudSpinner.getSelectedItem() + " baud, " + (machineState.isEmpty() ? "connected" : machineState) : "not connected") + "\n"
-                + "Log server: " + BuildConfig.LOG_SERVER + "\n"
+                + "Backoffice: " + RemoteLog.server() + (remote.isOnline() ? " (online)" : " (offline)") + "\n"
                 + "Package: " + getPackageName();
         new AlertDialog.Builder(this)
                 .setTitle("Grbl Sender")
-                .setIcon(android.R.drawable.ic_menu_compass)
+                .setIcon(R.mipmap.ic_launcher)
                 .setMessage(msg)
                 .setPositiveButton("OK", null)
                 .setNeutralButton("Check for update", (d, w) -> startActivity(
@@ -2381,7 +2904,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void setFullScreen(boolean on) {
         fullScreen = on;
         int vis = on ? View.GONE : View.VISIBLE;
-        for (int id : new int[]{R.id.toolbarRow, R.id.progressRow, R.id.leftPanel, R.id.middlePanel}) {
+        for (int id : new int[]{R.id.toolbarRow, R.id.progressRow, R.id.leftPanel, R.id.middlePanel,
+                R.id.titleBar, R.id.navRail, R.id.navDivider}) {
             findViewById(id).setVisibility(vis);
         }
         fullControls.setVisibility(on ? View.VISIBLE : View.GONE);
@@ -2409,6 +2933,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     @Override
     public void onBackPressed() {
         if (fullScreen) { setFullScreen(false); return; }
+        if (page == NAV_SETTINGS) { showPage(NAV_CONTROL); return; }
         super.onBackPressed();
     }
 
@@ -2444,6 +2969,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             long rem = Math.round(remaining);
             String ends = new java.text.SimpleDateFormat("HH:mm", Locale.US).format(new java.util.Date(now + rem * 1000));
             eta = " · " + hms(rem) + " left (ends ≈ " + ends + ")";
+            etaSec = rem;
         }
         txtJob.setText(String.format(Locale.US, "Running %d / %d · %s%s%s", ackedLines, program.size(), hms(sec), eta, errs));
         JobService.update(this, String.format(Locale.US, "%.1f%% · line %d / %d · %s%s%s",
@@ -2512,13 +3038,28 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 : String.format(Locale.US, "%d:%02d", sec / 60, sec % 60);
     }
 
+    private void setLive(int id, boolean on) {
+        View v = findViewById(id);
+        v.setEnabled(on);
+        v.setAlpha(on ? 1f : 0.38f);
+    }
+
     private void updateButtons() {
         boolean connected = port != null;
         btnConnect.setText(connected ? "Disconnect" : "Connect");
+        btnConnect.setBackgroundResource(connected ? R.drawable.btn_tech : R.drawable.btn_accent);
+        btnConnect.setTextColor(connected ? Ui.TEXT : Ui.ACCENT);
         baudSpinner.setEnabled(!connected && !boardIsBlue());
         btnRun.setEnabled(connected && !streaming && docLength() > 0);
         btnLoad.setEnabled(!streaming && docLength() > 0);
         for (int id : new int[]{R.id.btnNew, R.id.btnOpen, R.id.btnClose}) findViewById(id).setEnabled(!streaming);
+        // realtime commands only mean something with a machine attached; dim them otherwise
+        setLive(R.id.btnHold, connected);
+        setLive(R.id.btnResume, connected);
+        setLive(R.id.btnStop, connected || streaming);
+        setLive(R.id.btnRun, btnRun.isEnabled());
+        setLive(R.id.btnLoad, btnLoad.isEnabled());
+        publishStatus(true);
     }
 
     private void log(String msg) {
@@ -2526,6 +3067,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (lower.contains("fail") || lower.contains("error:") || lower.contains("alarm")) RemoteLog.e("console", msg);
         else if (lower.startsWith("warning") || lower.contains("denied") || lower.startsWith("!!")) RemoteLog.w("console", msg);
         else RemoteLog.i("console", msg);
+        if (!msg.startsWith("<< ") && !msg.startsWith(">> ")) {
+            if (lower.contains("fail") || lower.contains("error") || lower.startsWith("!!")) DebugLog.cncErr(msg);
+            else DebugLog.cnc(msg);
+        }
         CharSequence cur = txtLog.getText();
         String next = cur.length() == 0 ? msg : cur + "\n" + msg;
         if (next.length() > MAX_LOG_CHARS) next = next.substring(next.length() - MAX_LOG_CHARS / 2);

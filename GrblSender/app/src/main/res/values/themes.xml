@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark "machine room" theme: near-black panels, cyan accent -->
+    <color name="bg">#0B0F14</color>
+    <color name="panel">#121820</color>
+    <color name="panel2">#18202A</color>
+    <color name="border">#263240</color>
+    <color name="text">#E3E9F0</color>
+    <color name="muted">#7F8C99</color>
+    <color name="accent">#00E5FF</color>
+    <color name="ok">#3DDC84</color>
+    <color name="warn">#FFC040</color>
+    <color name="err">#FF5C6C</color>
+
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">@color/panel</item>
+        <item name="android:colorPrimaryDark">@color/bg</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:colorControlActivated">@color/accent</item>
+        <item name="android:colorControlNormal">@color/muted</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/muted</item>
+        <item name="android:buttonStyle">@style/TechButton</item>
+        <item name="android:alertDialogTheme">@style/TechDialog</item>
+    </style>
+
+    <style name="TechButton" parent="@android:style/Widget.Material.Button">
+        <item name="android:background">@drawable/btn_tech</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:minHeight">40dp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+
+    <style name="TechDialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:windowBackground">@drawable/dialog_bg</item>
+        <item name="android:textColorPrimary">@color/text</item>
+    </style>
+
+    <style name="SplashTheme" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+    </style>
+</resources>

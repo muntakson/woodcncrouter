@@ -3,375 +3,483 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Grbl Sender Backoffice</title>
+<title>Grbl Sender · CNC Cloud</title>
+<meta name="description" content="Run a Grbl wood CNC router from an Android tablet: NC files, firmware, APK releases, live logs and remote control.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
   :root {
-    --bg: #15171a; --panel: #1d2024; --panel2: #24282d; --border: #30353b;
-    --text: #e3e6ea; --muted: #8b939c; --accent: #4ea1ff;
-    --V: #7d858e; --D: #6cc3d5; --I: #b9e3b9; --W: #f0c050; --E: #ff6b6b;
-    --ok: #4cd07d;
-    --mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --bg: #05070b; --bg2: #0a0e15; --panel: rgba(17, 24, 36, .72); --panel-solid: #111824;
+    --line: rgba(148, 163, 184, .14); --line2: rgba(148, 163, 184, .26);
+    --text: #e6edf6; --muted: #8b98a9; --dim: #5d6a7c;
+    --cyan: #22d3ee; --violet: #8b5cf6; --lime: #a3e635; --amber: #fbbf24; --red: #f87171;
+    --grad: linear-gradient(110deg, #22d3ee 0%, #818cf8 55%, #c084fc 100%);
+    --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    --r: 16px;
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
-  body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  .live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-  .dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  a { color: inherit; text-decoration: none; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+  /* background: blueprint grid + glow */
+  .bg { position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(900px 500px at 75% -10%, rgba(139, 92, 246, .22), transparent 60%),
+      radial-gradient(700px 500px at 10% 10%, rgba(34, 211, 238, .16), transparent 60%),
+      linear-gradient(var(--bg), var(--bg)); }
+  .bg::after { content: ""; position: absolute; inset: 0;
+    background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 48px 48px; mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 75%); opacity: .55; }
+
+  /* nav */
+  nav.top { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    background: rgba(5, 7, 11, .6); border-bottom: 1px solid var(--line); }
+  nav.top .wrap { display: flex; align-items: center; gap: 28px; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: .04em; }
+  .brand img { width: 30px; height: 30px; }
+  .brand span b { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .links { display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
+  .links a:hover { color: var(--text); }
   .spacer { flex: 1; }
-  main { display: grid; grid-template-columns: 300px 1fr; height: calc(100% - 45px); }
-  aside { border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; background: var(--panel); }
-  aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 8px; }
-  aside h2:first-child { margin-top: 0; }
-  .dev { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; cursor: pointer; background: var(--panel2); }
-  .dev:hover { border-color: var(--muted); }
-  .dev.sel { border-color: var(--accent); }
-  .dev .name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
-  .dev .meta { color: var(--muted); font-size: 12px; }
-  .rel { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
-  .rel .ver { font-size: 18px; font-weight: 600; }
-  .rel a.btn { display: block; text-align: center; margin: 8px 0; }
-  #qr { background: #fff; padding: 8px; border-radius: 6px; width: fit-content; margin: 8px auto 4px; }
-  #qrUrl { font-family: var(--mono); font-size: 11px; color: var(--muted); word-break: break-all; text-align: center; }
-  .old { font-size: 12px; margin-top: 8px; }
-  .gf { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
-  .gf .fname { font-family: var(--mono); font-size: 13px; font-weight: 600; word-break: break-all; }
-  .gf .meta { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
-  .gf a.btn { display: block; text-align: center; padding: 10px; font-size: 15px; }
-  .gf a.small { color: var(--accent); font-size: 12px; display: inline-block; margin-top: 6px; }
-  .old a { color: var(--accent); }
-  section.console { display: flex; flex-direction: column; min-width: 0; }
-  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
-  .lv { border: 1px solid var(--border); background: transparent; color: var(--muted); border-radius: 6px; padding: 3px 9px; font: 600 12px var(--mono); cursor: pointer; }
-  .lv.on { color: var(--bg); }
-  .lv.on[data-l=V] { background: var(--V); } .lv.on[data-l=D] { background: var(--D); }
-  .lv.on[data-l=I] { background: var(--I); } .lv.on[data-l=W] { background: var(--W); }
-  .lv.on[data-l=E] { background: var(--E); }
-  input[type=search] { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 9px; min-width: 200px; }
-  button, a.btn { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 11px; cursor: pointer; font: inherit; text-decoration: none; }
-  button:hover, a.btn:hover { border-color: var(--muted); }
-  a.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  label.chk { color: var(--muted); font-size: 13px; display: inline-flex; gap: 4px; align-items: center; }
-  #log { flex: 1; overflow-y: auto; font: 12.5px/1.45 var(--mono); padding: 6px 0; }
-  .row { display: grid; grid-template-columns: 96px 18px 70px 1fr; gap: 8px; padding: 1px 12px; white-space: pre-wrap; word-break: break-word; }
-  .row.all { grid-template-columns: 96px 70px 18px 70px 1fr; }
-  .row:hover { background: var(--panel2); }
-  .row .t, .row .d { color: var(--muted); }
-  .row .g { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row[data-l=V] .m { color: var(--V); } .row[data-l=D] .m { color: var(--D); }
-  .row[data-l=I] .m { color: var(--I); } .row[data-l=W] .m { color: var(--W); }
-  .row[data-l=E] .m { color: var(--E); } .row[data-l=E] { background: rgba(255,107,107,.06); }
-  .row .l { font-weight: 700; }
-  .row[data-l=E] .l { color: var(--E); } .row[data-l=W] .l { color: var(--W); }
-  .empty { color: var(--muted); padding: 24px; text-align: center; }
-  #more { margin: 6px 12px; }
-  .status { color: var(--muted); font-size: 12px; }
-  @media (max-width: 760px) {
-    main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-    aside { max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--border); }
-    .row, .row.all { grid-template-columns: 80px 14px 1fr; }
-    .row .g, .row .d { display: none; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 10px; font: 600 14px var(--sans);
+    border: 1px solid var(--line2); background: rgba(255, 255, 255, .03); color: var(--text); cursor: pointer; transition: .2s; white-space: nowrap; }
+  .btn:hover { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+  .btn.primary { border: 0; background: var(--grad); color: #05070b; }
+  .btn.primary:hover { box-shadow: 0 8px 30px -6px rgba(129, 140, 248, .6); transform: translateY(-1px); }
+  .btn svg { width: 16px; height: 16px; }
+  .menu-btn { display: none; }
+
+  /* hero */
+  .hero { display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; padding: 88px 0 72px; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 8px; border: 1px solid var(--line2); border-radius: 999px;
+    font: 500 12.5px var(--mono); color: var(--muted); background: rgba(255, 255, 255, .02); }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 10px var(--lime); }
+  h1 { font-size: clamp(38px, 5.4vw, 64px); line-height: 1.04; letter-spacing: -.035em; margin: 22px 0 18px; font-weight: 800; }
+  h1 .g { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: 18px; color: var(--muted); max-width: 540px; margin: 0 0 32px; }
+  .ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+  .ctas .btn { padding: 13px 22px; font-size: 15px; }
+  .trust { display: flex; gap: 22px; margin-top: 36px; font: 500 12.5px var(--mono); color: var(--dim); flex-wrap: wrap; }
+  .trust span::before { content: "▹ "; color: var(--cyan); }
+
+  /* machine window */
+  .machine { position: relative; border: 1px solid var(--line2); border-radius: 20px; background: var(--panel); backdrop-filter: blur(10px);
+    box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .7), 0 0 0 1px rgba(255, 255, 255, .02) inset; overflow: hidden; }
+  .machine::before { content: ""; position: absolute; inset: -1px; border-radius: 20px; padding: 1px; background: var(--grad); opacity: .35;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
+  .mbar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); font: 500 12px var(--mono); color: var(--muted); }
+  .mbar .d { width: 10px; height: 10px; border-radius: 50%; background: #334155; }
+  .mbar .state { margin-left: auto; color: var(--cyan); display: flex; align-items: center; gap: 6px; }
+  .mbar .state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 8px var(--cyan); animation: blink 1.4s infinite; }
+  @keyframes blink { 50% { opacity: .3; } }
+  .stage { position: relative; aspect-ratio: 4 / 3; }
+  .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .dro { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); }
+  .dro div { padding: 12px 16px; border-right: 1px solid var(--line); font: 500 11px var(--mono); color: var(--dim); }
+  .dro div:last-child { border-right: 0; }
+  .dro b { display: block; font: 600 17px var(--mono); color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .dro .x b { color: #fb7185; } .dro .y b { color: var(--lime); } .dro .z b { color: #60a5fa; }
+
+  /* stats */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); overflow: hidden; }
+  .stat { padding: 24px 26px; border-right: 1px solid var(--line); }
+  .stat:last-child { border-right: 0; }
+  .stat .v { font: 700 30px var(--mono); letter-spacing: -.02em; }
+  .stat .k { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+  section.block { padding: 96px 0 0; }
+  .eyebrow { font: 600 12px var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--cyan); }
+  h2 { font-size: clamp(28px, 3.4vw, 42px); letter-spacing: -.03em; line-height: 1.1; margin: 10px 0 14px; font-weight: 800; }
+  .sub { color: var(--muted); max-width: 640px; margin: 0 0 40px; font-size: 17px; }
+
+  /* modules grid */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card { position: relative; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); padding: 26px; transition: .25s; overflow: hidden; }
+  .card:hover { border-color: var(--line2); transform: translateY(-3px); }
+  .card::after { content: ""; position: absolute; inset: 0; background: radial-gradient(400px 160px at var(--mx, 50%) 0%, rgba(34, 211, 238, .10), transparent 70%); opacity: 0; transition: .3s; pointer-events: none; }
+  .card:hover::after { opacity: 1; }
+  .ico { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; margin-bottom: 18px;
+    background: linear-gradient(135deg, rgba(34, 211, 238, .16), rgba(139, 92, 246, .16)); border: 1px solid var(--line2); color: var(--cyan); }
+  .ico svg { width: 22px; height: 22px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; letter-spacing: -.01em; }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .card .go { display: inline-flex; gap: 6px; align-items: center; margin-top: 16px; font: 600 13px var(--mono); color: var(--cyan); }
+  .card .go::after { content: "→"; transition: .2s; }
+  .card:hover .go::after { transform: translateX(4px); }
+  .tag { position: absolute; top: 22px; right: 22px; font: 600 10.5px var(--mono); letter-spacing: .08em; padding: 3px 8px; border-radius: 6px;
+    border: 1px solid var(--line2); color: var(--muted); }
+  .tag.pub { color: var(--lime); border-color: rgba(163, 230, 53, .35); }
+
+  /* flow diagram */
+  .flow { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); padding: 28px; }
+  .flow svg { width: 100%; height: auto; display: block; }
+  .flow text { font-family: var(--mono); }
+  .wire { stroke-dasharray: 6 6; animation: flowdash 1s linear infinite; }
+  @keyframes flowdash { to { stroke-dashoffset: -12; } }
+
+  /* downloads */
+  .dl { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; }
+  .apk { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: center; }
+  .apk .ver { font: 700 40px var(--mono); letter-spacing: -.03em; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .apk .meta { color: var(--muted); font-size: 13.5px; margin: 4px 0 18px; }
+  #qr { background: #fff; padding: 10px; border-radius: 12px; }
+  #qr img, #qr canvas { display: block; }
+  .list { display: flex; flex-direction: column; gap: 10px; }
+  .item { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255, 255, 255, .015); transition: .2s; }
+  .item:hover { border-color: var(--line2); background: rgba(255, 255, 255, .03); }
+  .item .badge { font: 700 10.5px var(--mono); padding: 4px 8px; border-radius: 6px; flex: none; }
+  .badge.avr { background: rgba(34, 211, 238, .12); color: var(--cyan); }
+  .badge.stm { background: rgba(139, 92, 246, .16); color: #c4b5fd; }
+  .badge.nc { background: rgba(163, 230, 53, .12); color: var(--lime); }
+  .item .t { min-width: 0; flex: 1; }
+  .item .n { font-weight: 600; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .m { color: var(--dim); font: 12px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .dlb { flex: none; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; border: 1px solid var(--line2); color: var(--muted); transition: .2s; }
+  .item:hover .dlb { color: var(--cyan); border-color: var(--cyan); }
+  .item .dlb svg { width: 16px; height: 16px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; width: fit-content; background: rgba(0, 0, 0, .25); }
+  .tabs button { border: 0; background: transparent; color: var(--muted); font: 600 13px var(--sans); padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+  .tabs button.on { background: rgba(255, 255, 255, .07); color: var(--text); }
+  .empty { color: var(--dim); font: 13px var(--mono); padding: 18px; text-align: center; border: 1px dashed var(--line2); border-radius: 12px; }
+
+  /* specs */
+  .specs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .spec { border: 1px solid var(--line); border-radius: var(--r); padding: 22px; background: var(--panel); }
+  .spec h4 { margin: 0 0 12px; font: 600 12px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .spec dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; }
+  .spec dt { color: var(--dim); font-family: var(--mono); font-size: 12.5px; padding-top: 2px; }
+  .spec dd { margin: 0; }
+
+  .cta { margin: 110px 0 0; padding: 56px; border-radius: 24px; border: 1px solid var(--line2); text-align: center; position: relative; overflow: hidden;
+    background: radial-gradient(600px 240px at 50% 0%, rgba(139, 92, 246, .25), transparent 70%), var(--panel); }
+  .cta h2 { margin-top: 0; }
+  .cta .ctas { justify-content: center; }
+  footer { margin-top: 80px; border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--dim); font: 12.5px var(--mono); }
+  footer .wrap { display: flex; gap: 20px; flex-wrap: wrap; }
+  footer a:hover { color: var(--text); }
+
+  .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .7s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+
+  @media (max-width: 960px) {
+    .hero { grid-template-columns: 1fr; padding-top: 56px; gap: 40px; }
+    .grid, .specs { grid-template-columns: 1fr 1fr; }
+    .dl { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .stat:nth-child(2) { border-right: 0; }
+    .stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    .links { display: none; }
   }
+  @media (max-width: 600px) {
+    .wrap { padding: 0 16px; }
+    .grid, .specs { grid-template-columns: 1fr; }
+    .apk { grid-template-columns: 1fr; }
+    #qr { justify-self: start; }
+    .cta { padding: 36px 20px; }
+    nav.top .btn:not(.primary) { display: none; }
+    .dro b { font-size: 14px; }
+    .dro div { padding: 10px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; } .wire, .mbar .state::before { animation: none; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>Grbl Sender · Backoffice</h1>
-  <span class="live"><span id="liveDot" class="dot"></span><span id="liveTxt">connecting…</span></span>
-  <span class="spacer"></span>
-  <span class="status" id="count"></span>
-</header>
-<main>
-  <aside>
-    <h2>Latest APK</h2>
-    <div class="rel" id="release"><div class="empty">No release published</div></div>
+<div class="bg"></div>
 
-    <h2>Firmware – Arduino Pro Mini</h2>
-    <div id="fw-promini"><div class="empty">No firmware published</div></div>
-
-    <h2>Firmware – STM32F103C8T6 (Blue / Black Pill)</h2>
-    <div id="fw-bluepill"><div class="empty">No firmware published</div></div>
-
-    <h2>G-code files</h2>
-    <div id="gcode"><div class="empty">No G-code files</div></div>
-
-    <h2>Devices</h2>
-    <div class="dev sel" data-id="" id="allDev"><div class="name">All devices</div></div>
-    <div id="devices"></div>
-  </aside>
-
-  <section class="console">
-    <div class="toolbar">
-      <span>
-        <button class="lv on" data-l="V">V</button>
-        <button class="lv on" data-l="D">D</button>
-        <button class="lv on" data-l="I">I</button>
-        <button class="lv on" data-l="W">W</button>
-        <button class="lv on" data-l="E">E</button>
-      </span>
-      <input type="search" id="q" placeholder="Filter text / tag…">
-      <label class="chk"><input type="checkbox" id="follow" checked> Follow</label>
-      <button id="pause">Pause</button>
-      <span class="spacer"></span>
-      <button id="export">Export .txt</button>
-      <button id="clear">Clear logs</button>
+<nav class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/favicon.svg" alt=""><span>GRBL<b>·SENDER</b></span></a>
+    <div class="links">
+      <a href="#modules">Platform</a>
+      <a href="#how">How it works</a>
+      <a href="#downloads">Downloads</a>
+      <a href="#hardware">Hardware</a>
     </div>
-    <div id="log"></div>
+    <span class="spacer"></span>
+    <a class="btn" href="/apk/latest.apk">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>APK</a>
+    <a class="btn primary" href="/app">Open console
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
+  </div>
+</nav>
+
+<main class="wrap">
+  <!-- HERO -->
+  <section class="hero">
+    <div>
+      <span class="chip"><i></i><span id="heroChip">Grbl 1.1 · Android · Cloud console</span></span>
+      <h1>Cut wood with a <span class="g">tablet</span>.<br>Watch it from anywhere.</h1>
+      <p class="lead">Grbl Sender streams NC files from an Android tablet to your router over USB, then reports every line, job and alarm to this console, where you can run, hold or stop the machine from anywhere.</p>
+      <div class="ctas">
+        <a class="btn primary" href="/apk/latest.apk" id="heroApk">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
+          Download the app</a>
+        <a class="btn" href="/app#remote">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z" fill="currentColor"/></svg>
+          Remote control</a>
+      </div>
+      <div class="trust"><span>CH340 · STM32 DFU</span><span>Long-poll sync</span><span>Zero-dependency server</span></div>
+    </div>
+
+    <div class="machine reveal" aria-label="Animated toolpath preview">
+      <div class="mbar"><span class="d"></span><span class="d"></span><span class="d"></span>&nbsp; dome_parts_30mm.nc<span class="state" id="mState">RUN</span></div>
+      <div class="stage">
+        <svg viewBox="0 0 400 300" id="stage">
+          <defs>
+            <pattern id="minor" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M10 0H0V10" fill="none" stroke="rgba(148,163,184,.07)" stroke-width="1"/></pattern>
+            <pattern id="major" width="50" height="50" patternUnits="userSpaceOnUse"><rect width="50" height="50" fill="url(#minor)"/><path d="M50 0H0V50" fill="none" stroke="rgba(148,163,184,.14)" stroke-width="1"/></pattern>
+            <linearGradient id="cut" x1="0" x2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#c084fc"/></linearGradient>
+            <radialGradient id="glow"><stop offset="0" stop-color="#22d3ee" stop-opacity=".9"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+          </defs>
+          <rect width="400" height="300" fill="url(#major)"/>
+          <rect x="30" y="30" width="340" height="240" rx="6" fill="rgba(251,191,36,.035)" stroke="rgba(251,191,36,.25)" stroke-dasharray="4 4"/>
+          <path d="M30 285h30M30 285v-30" stroke="#fb7185" stroke-width="1.5"/><path d="M15 270v-30" stroke="#a3e635" stroke-width="1.5" transform="translate(15 15)"/>
+          <path id="ghost" fill="none" stroke="rgba(148,163,184,.18)" stroke-width="1" stroke-dasharray="2 4"/>
+          <path id="tp" fill="none" stroke="url(#cut)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle id="halo" r="16" fill="url(#glow)"/>
+          <circle id="bit" r="4" fill="#05070b" stroke="#22d3ee" stroke-width="2"/>
+        </svg>
+      </div>
+      <div class="dro">
+        <div class="x">X<b id="dx">0.000</b></div>
+        <div class="y">Y<b id="dy">0.000</b></div>
+        <div class="z">Z<b id="dz">5.000</b></div>
+        <div>FEED<b id="df">0</b></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STATS -->
+  <div class="stats reveal">
+    <div class="stat"><div class="v" id="sApk">—</div><div class="k">Latest app release</div></div>
+    <div class="stat"><div class="v" id="sRel">—</div><div class="k">Builds shipped</div></div>
+    <div class="stat"><div class="v" id="sFw">—</div><div class="k">Firmware images</div></div>
+    <div class="stat"><div class="v" id="sNc">—</div><div class="k">NC files ready</div></div>
+  </div>
+
+  <!-- MODULES -->
+  <section class="block" id="modules">
+    <div class="eyebrow reveal">// Platform</div>
+    <h2 class="reveal">Everything the router needs, in one console.</h2>
+    <p class="sub reveal">Files, firmware and app builds go to the tablet. Logs, job history and machine status come back from it.</p>
+    <div class="grid">
+      <a class="card reveal" href="/app#files">
+        <span class="tag pub">PUBLIC</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h2l2 4 2-4h2"/></svg></div>
+        <h3>NC files</h3><p>Upload G-code, preview the toolpath and send it to the tablet with one click to load or run it.</p><span class="go">Manage files</span></a>
+      <a class="card reveal" href="/app#firmware">
+        <span class="tag pub">PUBLIC</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="10" y="10" width="4" height="4"/></svg></div>
+        <h3>Firmware files</h3><p>Grbl builds for the Arduino Pro Mini and STM32F103 Blue/Black Pill, flashed from the app over USB or DFU.</p><span class="go">Browse firmware</span></a>
+      <a class="card reveal" href="/app#apk">
+        <span class="tag pub">PUBLIC</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg></div>
+        <h3>APK files</h3><p>Every Grbl Sender release with its notes. The app checks this list and updates itself.</p><span class="go">Release history</span></a>
+      <a class="card reveal" href="/app#logs">
+        <span class="tag">ADMIN</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></svg></div>
+        <h3>Logs</h3><p>A live debug stream from every tablet, with level filters, search and export for USB and Grbl troubleshooting.</p><span class="go">Open logs</span></a>
+      <a class="card reveal" href="/app#remote">
+        <span class="tag">ADMIN</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/><path d="M2 9a14 14 0 0 1 20 0"/></svg></div>
+        <h3>Remote control</h3><p>Live DRO and console, plus run, hold, resume, stop, home and zero, all through a secure long-poll link.</p><span class="go">Take control</span></a>
+      <a class="card reveal" href="/app#jobs">
+        <span class="tag">ADMIN</span>
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+        <h3>Job log</h3><p>Every cut is recorded with its start, pauses, errors and outcome, line by line.</p><span class="go">See history</span></a>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="block" id="how">
+    <div class="eyebrow reveal">// Architecture</div>
+    <h2 class="reveal">USB on the bench, HTTPS to the cloud.</h2>
+    <p class="sub reveal">The tablet drives the router directly. It keeps one long-poll request open to this server, so a command from the console reaches the machine in under a second.</p>
+    <div class="flow reveal">
+      <svg viewBox="0 0 1000 200" role="img" aria-label="Router ↔ USB ↔ Tablet ↔ HTTPS ↔ Console ↔ You">
+        <defs><linearGradient id="fg" x1="0" x2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs>
+        <g fill="rgba(17,24,36,.9)" stroke="rgba(148,163,184,.3)">
+          <rect x="10" y="50" width="170" height="100" rx="14"/><rect x="280" y="50" width="170" height="100" rx="14"/>
+          <rect x="550" y="50" width="170" height="100" rx="14" stroke="url(#fg)" stroke-width="1.5"/><rect x="820" y="50" width="170" height="100" rx="14"/>
+        </g>
+        <g stroke="url(#fg)" stroke-width="2" fill="none" class="wire"><path d="M180 100H280"/><path d="M450 100H550"/><path d="M720 100H820"/></g>
+        <g font-size="11" fill="#8b98a9" text-anchor="middle"><text x="230" y="88">USB serial</text><text x="500" y="88">HTTPS sync</text><text x="770" y="88">browser / API</text></g>
+        <g text-anchor="middle">
+          <text x="95" y="96" font-size="16" font-weight="700" fill="#e6edf6">Grbl board</text><text x="95" y="120" font-size="11" fill="#5d6a7c">Pro Mini · Blue Pill</text>
+          <text x="365" y="96" font-size="16" font-weight="700" fill="#e6edf6">Tablet</text><text x="365" y="120" font-size="11" fill="#5d6a7c">Grbl Sender app</text>
+          <text x="635" y="96" font-size="16" font-weight="700" fill="#e6edf6">Backoffice</text><text x="635" y="120" font-size="11" fill="#5d6a7c">files · logs · queue</text>
+          <text x="905" y="96" font-size="16" font-weight="700" fill="#e6edf6">You</text><text x="905" y="120" font-size="11" fill="#5d6a7c">console · curl</text>
+        </g>
+        <g font-size="10.5" fill="#5d6a7c" text-anchor="middle"><text x="95" y="178">steppers · spindle</text><text x="365" y="178">streams G-code</text><text x="635" y="178">this server</text><text x="905" y="178">anywhere</text></g>
+      </svg>
+    </div>
+  </section>
+
+  <!-- DOWNLOADS -->
+  <section class="block" id="downloads">
+    <div class="eyebrow reveal">// Downloads</div>
+    <h2 class="reveal">Grab what the shop floor needs.</h2>
+    <p class="sub reveal">Scan the code with the tablet to install the latest build. Firmware and NC files can be downloaded directly, or opened from inside the app.</p>
+    <div class="dl">
+      <div class="card reveal apk" id="apkCard">
+        <div>
+          <div class="eyebrow" style="color:var(--muted)">Android APK</div>
+          <div class="ver" id="apkVer">v—</div>
+          <div class="meta" id="apkMeta">No release published yet</div>
+          <a class="btn primary" href="/apk/latest.apk">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>Download latest</a>
+        </div>
+        <div id="qr"></div>
+      </div>
+      <div class="card reveal">
+        <div class="tabs" role="tablist">
+          <button class="on" data-tab="fw">Firmware</button>
+          <button data-tab="nc">NC files</button>
+        </div>
+        <div class="list" id="fwList"><div class="empty">No firmware published</div></div>
+        <div class="list" id="ncList" hidden><div class="empty">No NC files</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HARDWARE -->
+  <section class="block" id="hardware">
+    <div class="eyebrow reveal">// Hardware</div>
+    <h2 class="reveal">Tuned for a home-built wood router.</h2>
+    <p class="sub reveal">Firmware builds and default settings are matched to the boards and drives this machine actually uses.</p>
+    <div class="specs">
+      <div class="spec reveal"><h4>AVR controller</h4><dl>
+        <dt>board</dt><dd>Arduino Pro Mini 3.3 V</dd><dt>mcu</dt><dd>ATmega328P · 8 MHz</dd>
+        <dt>fw</dt><dd>Grbl 1.1h · 38400 baud</dd><dt>link</dt><dd>CH340 USB-serial</dd></dl></div>
+      <div class="spec reveal"><h4>STM32 controller</h4><dl>
+        <dt>board</dt><dd>Blue / Black Pill</dd><dt>mcu</dt><dd>STM32F103 · 72 MHz</dd>
+        <dt>fw</dt><dd>Grbl 1.1f (USB CDC)</dd><dt>flash</dt><dd>Maple DFU from the tablet</dd></dl></div>
+      <div class="spec reveal"><h4>Motion</h4><dl>
+        <dt>X / Y</dt><dd>81.49 steps/mm</dd><dt>Z</dt><dd>16.3 steps/mm</dd>
+        <dt>rate</dt><dd>1000 mm/min</dd><dt>drive</dt><dd>MA860H · MK300 spindle</dd></dl></div>
+    </div>
+  </section>
+
+  <section class="cta reveal">
+    <h2>Ready when the spindle is.</h2>
+    <p class="sub" style="margin:0 auto 28px">Sign in to manage files and releases, follow live logs and control the machine.</p>
+    <div class="ctas">
+      <a class="btn primary" href="/app">Open console
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
+      <a class="btn" href="/app#api">HTTP API</a>
+    </div>
   </section>
 </main>
 
+<footer><div class="wrap">
+  <span>© <span id="yr"></span> Grbl Sender · wood CNC router</span><span class="spacer"></span>
+  <a href="/app">Console</a><a href="/apk/latest.apk">APK</a><a href="/api/firmware">Firmware JSON</a><a href="/health">Status</a>
+</div></footer>
+
 <script>
 const $ = (s) => document.querySelector(s);
-const logEl = $('#log');
-const state = { device: '', levels: new Set('VDIWE'), q: '', paused: false, rows: [], devices: [], maxId: 0, minId: 0 };
-const MAX_ROWS = 5000;
+const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const kb = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const date = (t) => new Date(t).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+const DL = '<span class="dlb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg></span>';
+$('#yr').textContent = new Date().getFullYear();
 
-function fmtTime(ts) {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
-}
-function ago(ts) {
-  const s = Math.round((Date.now() - ts) / 1000);
-  if (s < 60) return s + 's ago';
-  if (s < 3600) return Math.round(s / 60) + 'm ago';
-  if (s < 86400) return Math.round(s / 3600) + 'h ago';
-  return new Date(ts).toLocaleString();
-}
-function devName(id) {
-  const d = state.devices.find((x) => x.id === id);
-  return d ? (d.model || id.slice(0, 8)) : id.slice(0, 8);
-}
-function matches(r) {
-  if (state.device && r.device_id !== state.device) return false;
-  if (!state.levels.has(r.level)) return false;
-  if (state.q) {
-    const q = state.q.toLowerCase();
-    if (!r.msg.toLowerCase().includes(q) && !r.tag.toLowerCase().includes(q)) return false;
+/* ---------- animated toolpath ---------- */
+(function toolpath() {
+  // a few dome parts (hexagons + pentagon) and a circle, joined by rapids
+  const shapes = [];
+  const poly = (cx, cy, r, n, rot = 0) => Array.from({ length: n + 1 }, (_, i) => {
+    const a = rot + (i % n) * 2 * Math.PI / n; return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  });
+  shapes.push(poly(105, 105, 48, 6, Math.PI / 6), poly(215, 105, 48, 6, Math.PI / 6), poly(160, 200, 48, 5, -Math.PI / 2),
+    poly(305, 175, 50, 48), poly(305, 175, 28, 48));
+  let d = '', ghost = '';
+  let prev = [40, 280];
+  for (const s of shapes) {
+    ghost += `M${prev[0]} ${prev[1]}L${s[0][0]} ${s[0][1]}`;
+    d += `M${s[0][0]} ${s[0][1]}` + s.slice(1).map((p) => `L${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join('');
+    prev = s[s.length - 1];
   }
-  return true;
-}
-function rowEl(r) {
-  const div = document.createElement('div');
-  div.className = 'row' + (state.device ? '' : ' all');
-  div.dataset.l = r.level;
-  const cells = [['t', fmtTime(r.ts)]];
-  if (!state.device) cells.push(['d', devName(r.device_id)]);
-  cells.push(['l', r.level], ['g', r.tag], ['m', r.msg]);
-  for (const [c, txt] of cells) {
-    const s = document.createElement('span');
-    s.className = c; s.textContent = txt;
-    if (c === 'g') s.title = txt;
-    div.appendChild(s);
+  const tp = $('#tp'), bit = $('#bit'), halo = $('#halo');
+  tp.setAttribute('d', d); $('#ghost').setAttribute('d', ghost + d);
+  const segs = shapes.map((s) => {
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', 'M' + s.map((q) => q.join(' ')).join('L')); return { p, len: p.getTotalLength() };
+  });
+  const total = segs.reduce((a, s) => a + s.len, 0);
+  tp.style.strokeDasharray = total; tp.style.strokeDashoffset = total;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const place = (x, y) => { bit.setAttribute('cx', x); bit.setAttribute('cy', y); halo.setAttribute('cx', x); halo.setAttribute('cy', y);
+    $('#dx').textContent = ((x - 30) / 2).toFixed(3); $('#dy').textContent = ((270 - y) / 2).toFixed(3); };
+  if (reduce) { tp.style.strokeDashoffset = 0; place(305, 147); $('#dz').textContent = '-3.000'; $('#df').textContent = '0'; return; }
+  const SPEED = 70; // px per second
+  let t0 = null;
+  function frame(t) {
+    if (t0 === null) t0 = t;
+    let dist = (t - t0) / 1000 * SPEED;
+    if (dist > total + 120) { t0 = t; dist = 0; }
+    const cut = Math.min(dist, total);
+    tp.style.strokeDashoffset = total - cut;
+    let acc = 0, pt = null;
+    for (const s of segs) { if (cut <= acc + s.len) { pt = s.p.getPointAtLength(cut - acc); break; } acc += s.len; }
+    const done = dist >= total;
+    if (!pt) pt = segs[segs.length - 1].p.getPointAtLength(segs[segs.length - 1].len);
+    place(pt.x, pt.y);
+    $('#dz').textContent = done ? '5.000' : '-3.000';
+    $('#df').textContent = done ? '0' : (1000 + Math.round(Math.sin(t / 400) * 40));
+    $('#mState').textContent = done ? 'IDLE' : 'RUN';
+    requestAnimationFrame(frame);
   }
-  return div;
-}
-function render() {
-  logEl.textContent = '';
-  const visible = state.rows.filter(matches);
-  if (state.minId > 1) {
-    const b = document.createElement('button');
-    b.id = 'more'; b.textContent = 'Load older';
-    b.onclick = loadOlder;
-    logEl.appendChild(b);
-  }
-  if (!visible.length) {
-    const e = document.createElement('div');
-    e.className = 'empty'; e.textContent = 'No log lines yet. Open Grbl Sender on the tablet.';
-    logEl.appendChild(e);
-  }
-  const frag = document.createDocumentFragment();
-  for (const r of visible) frag.appendChild(rowEl(r));
-  logEl.appendChild(frag);
-  $('#count').textContent = `${visible.length} lines shown`;
-  if ($('#follow').checked) logEl.scrollTop = logEl.scrollHeight;
-}
-function append(rows) {
-  if (state.paused) { state.buffer = (state.buffer || []).concat(rows); $('#pause').textContent = `Resume (${state.buffer.length})`; return; }
-  state.rows.push(...rows);
-  for (const r of rows) state.maxId = Math.max(state.maxId, r.id);
-  if (state.rows.length > MAX_ROWS) { state.rows.splice(0, state.rows.length - MAX_ROWS); render(); return; }
-  const empty = logEl.querySelector('.empty');
-  if (empty) empty.remove();
-  const frag = document.createDocumentFragment();
-  for (const r of rows) if (matches(r)) frag.appendChild(rowEl(r));
-  logEl.appendChild(frag);
-  if ($('#follow').checked) logEl.scrollTop = logEl.scrollHeight;
-}
+  requestAnimationFrame(frame);
+})();
 
-async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error(r.status);
-  return r.json();
-}
-async function loadLogs() {
-  const qs = new URLSearchParams({ limit: 1000 });
-  if (state.device) qs.set('device', state.device);
-  state.rows = await api('/api/logs?' + qs);
-  state.maxId = state.rows.reduce((m, r) => Math.max(m, r.id), state.maxId);
-  state.minId = state.rows.length ? state.rows[0].id : 0;
-  render();
-}
-async function loadOlder() {
-  const qs = new URLSearchParams({ limit: 1000, before: state.minId });
-  if (state.device) qs.set('device', state.device);
-  const older = await api('/api/logs?' + qs);
-  if (!older.length) { state.minId = 0; render(); return; }
-  state.rows = older.concat(state.rows);
-  state.minId = older[0].id;
-  const follow = $('#follow').checked;
-  $('#follow').checked = false;
-  render();
-  $('#follow').checked = follow;
-}
-async function loadDevices() {
-  state.devices = await api('/api/devices');
-  const box = $('#devices');
-  box.textContent = '';
-  for (const d of state.devices) {
-    const el = document.createElement('div');
-    el.className = 'dev' + (state.device === d.id ? ' sel' : '');
-    el.dataset.id = d.id;
-    const online = Date.now() - d.last_seen < 30000;
-    el.innerHTML = `<div class="name"><span class="dot ${online ? 'on' : ''}"></span><span></span></div>
-      <div class="meta"></div><div class="meta"></div><div class="meta"></div>`;
-    el.querySelector('.name span:last-child').textContent = `${d.manufacturer || ''} ${d.model || d.id.slice(0, 8)}`.trim();
-    const metas = el.querySelectorAll('.meta');
-    metas[0].textContent = `Android ${d.android ?? '?'} (SDK ${d.sdk ?? '?'}) · ${d.ip || ''}`;
-    metas[1].textContent = `App ${d.app_version ?? '?'} (${d.app_code ?? '?'}) · ${d.log_count} lines`;
-    metas[2].textContent = `Last seen ${ago(d.last_seen)}`;
-    el.onclick = () => selectDevice(d.id);
-    box.appendChild(el);
+/* ---------- live data from the public API ---------- */
+async function load() {
+  const j = (u) => fetch(u).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const [ver, fw, nc] = await Promise.all([j('/api/version'), j('/api/firmware'), j('/api/gcode')]);
+  if (ver && ver.versionCode) {
+    $('#sApk').textContent = 'v' + ver.versionName;
+    $('#sRel').textContent = ver.versionCode;
+    $('#apkVer').textContent = 'v' + ver.versionName;
+    $('#apkMeta').textContent = `Build ${ver.versionCode} · ${kb(ver.size)} · ${date(ver.published)}` + (ver.notes ? ` — ${ver.notes}` : '');
+    $('#heroChip').textContent = `v${ver.versionName} released ${date(ver.published)}`;
+    const url = `${location.origin}/apk/latest.apk`;
+    if (window.QRCode) new QRCode($('#qr'), { text: url, width: 132, height: 132, colorDark: '#05070b' }); else $('#qr').remove();
+  } else $('#qr').remove();
+  if (fw) {
+    $('#sFw').textContent = fw.length;
+    if (fw.length) $('#fwList').innerHTML = fw.map((f) => {
+      const stm = f.target !== 'promini';
+      return `<a class="item" href="${esc(f.url)}" download><span class="badge ${stm ? 'stm' : 'avr'}">${stm ? 'STM32' : 'AVR'}</span>
+        <span class="t"><div class="n">${esc(f.name)}</div><div class="m">${esc(f.version)} · ${kb(f.size)} · .${esc(f.format || 'hex')} · ${date(f.published)}</div></span>${DL}</a>`;
+    }).join('');
   }
-  $('#allDev').classList.toggle('sel', !state.device);
-}
-function selectDevice(id) {
-  state.device = id;
-  loadDevices();
-  loadLogs();
-}
-$('#allDev').onclick = () => selectDevice('');
-
-async function loadFirmware() {
-  const list = await fetch('/api/firmware').then((r) => r.json());   // newest first
-  const boxes = { promini: $('#fw-promini'), bluepill: $('#fw-bluepill') };
-  const seen = {};
-  for (const f of list) {
-    const board = f.target === 'promini' ? 'promini' : 'bluepill';   // bluepill-128k goes with the STM32 builds
-    const box = boxes[board];
-    if (!seen[board]) { box.textContent = ''; seen[board] = true; }
-    const offered = f.target === 'promini' || f.target === 'bluepill';
-    const first = offered && !box.querySelector('.gf.offered');
-    const el = document.createElement('div');
-    el.className = 'gf' + (offered ? ' offered' : '');
-    if (!offered) el.style.opacity = '0.55';
-    el.innerHTML = `<div class="fname"></div><div class="meta"></div><a class="small" download></a>`;
-    el.querySelector('.fname').textContent = (first ? '★ ' : '') + f.name;
-    const where = f.format === 'bin' ? ` · flash at ${f.address} over DFU` : '';
-    const hidden = offered ? '' : ' · not offered in the app (needs a 128 KB chip)';
-    el.querySelector('.meta').textContent = `${f.version} · ${(f.size / 1024).toFixed(1)} KB${where} · ${new Date(f.published).toLocaleString()}`
-      + (f.notes ? ` · ${f.notes}` : '') + hidden;
-    const a = el.querySelector('a');
-    a.href = f.url;
-    a.textContent = `Download .${f.format || 'hex'}`;
-    box.appendChild(el);
+  if (nc) {
+    $('#sNc').textContent = nc.length;
+    if (nc.length) $('#ncList').innerHTML = nc.map((f) => `<a class="item" href="/gcode/${encodeURIComponent(f.name)}" download>
+      <span class="badge nc">NC</span><span class="t"><div class="n">${esc(f.name)}</div>
+      <div class="m">${kb(f.size)} · ${date(f.modified)}${f.title ? ' · ' + esc(f.title) : ''}</div></span>${DL}</a>`).join('');
   }
 }
+load();
 
-async function loadGcode() {
-  const files = await fetch('/api/gcode').then((r) => r.json());
-  const box = $('#gcode');
-  if (!files.length) return;
-  box.textContent = '';
-  for (const f of files) {
-    const el = document.createElement('div');
-    el.className = 'gf';
-    el.innerHTML = `<div class="fname"></div><div class="meta"></div>
-      <a class="btn primary" download>⬇ Download</a>`;
-    el.querySelector('.fname').textContent = f.name;
-    el.querySelector('.meta').textContent = `${(f.size / 1024).toFixed(0)} KB · ${new Date(f.modified).toLocaleString()}` + (f.title ? ` · ${f.title}` : '');
-    const a = el.querySelector('a.btn');
-    a.href = '/gcode/' + encodeURIComponent(f.name);
-    a.setAttribute('download', f.name);
-    if (f.preview) {
-      const p = document.createElement('a');
-      p.className = 'small'; p.href = '/gcode/' + encodeURIComponent(f.preview); p.target = '_blank';
-      p.textContent = 'Preview image';
-      el.appendChild(p);
-    }
-    box.appendChild(el);
-  }
-}
-
-async function loadReleases() {
-  const rels = await api('/api/releases');
-  const box = $('#release');
-  if (!rels.length) return;
-  const latest = rels[0];
-  const dl = `${location.protocol}//${location.host}/apk/latest.apk`;
-  box.innerHTML = `<div class="ver"></div><div class="meta status"></div>
-    <a class="btn primary" href="/apk/latest.apk">Download APK</a>
-    <div id="qr"></div><div id="qrUrl"></div><div class="old"></div>`;
-  box.querySelector('.ver').textContent = `v${latest.versionName} (${latest.versionCode})`;
-  box.querySelector('.meta').textContent = `${new Date(latest.published).toLocaleString()} · ${(latest.size / 1024).toFixed(0)} KB` + (latest.notes ? ` · ${latest.notes}` : '');
-  $('#qrUrl').textContent = dl;
-  if (window.QRCode) new QRCode($('#qr'), { text: dl, width: 150, height: 150 });
-  else $('#qr').remove();
-  const old = box.querySelector('.old');
-  for (const r of rels.slice(1, 6)) {
-    const a = document.createElement('a');
-    a.href = `/apk/${r.file}`; a.textContent = `v${r.versionName} (${r.versionCode})`;
-    old.appendChild(a); old.appendChild(document.createTextNode('  '));
-  }
-}
-
-function connectStream() {
-  const es = new EventSource('/api/stream');
-  es.onopen = () => { $('#liveDot').classList.add('on'); $('#liveTxt').textContent = 'live'; };
-  es.onerror = () => { $('#liveDot').classList.remove('on'); $('#liveTxt').textContent = 'reconnecting…'; };
-  es.onmessage = (ev) => {
-    const rows = JSON.parse(ev.data);
-    if (rows.some((r) => !state.devices.find((d) => d.id === r.device_id))) loadDevices();
-    append(rows);
-  };
-}
-
-document.querySelectorAll('.lv').forEach((b) => b.onclick = () => {
-  const l = b.dataset.l;
-  if (state.levels.has(l)) state.levels.delete(l); else state.levels.add(l);
-  b.classList.toggle('on');
-  render();
+document.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  $('#fwList').hidden = b.dataset.tab !== 'fw'; $('#ncList').hidden = b.dataset.tab !== 'nc';
 });
-let qTimer;
-$('#q').oninput = (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { state.q = e.target.value; render(); }, 150); };
-$('#pause').onclick = () => {
-  state.paused = !state.paused;
-  $('#pause').textContent = state.paused ? 'Resume' : 'Pause';
-  if (!state.paused && state.buffer) { const b = state.buffer; state.buffer = null; append(b); }
-};
-$('#clear').onclick = async () => {
-  const what = state.device ? `logs of ${devName(state.device)}` : 'ALL logs';
-  if (!confirm(`Delete ${what} from the server?`)) return;
-  await api('/api/logs' + (state.device ? '?device=' + encodeURIComponent(state.device) : ''), { method: 'DELETE' });
-  state.rows = []; state.minId = 0; render(); loadDevices();
-};
-$('#export').onclick = () => {
-  const txt = state.rows.filter(matches).map((r) =>
-    `${new Date(r.ts).toISOString()} ${devName(r.device_id)} ${r.level}/${r.tag}: ${r.msg}`).join('\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain' }));
-  a.download = `grblsender-log-${new Date().toISOString().slice(0, 19).replace(/:/g, '')}.txt`;
-  a.click();
-};
 
-loadDevices().then(loadLogs);
-loadReleases();
-loadGcode();
-loadFirmware();
-connectStream();
-setInterval(loadDevices, 10000);
+/* ---------- scroll reveal + card spotlight ---------- */
+const io = new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: .12 });
+document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+document.querySelectorAll('.card').forEach((c) => c.addEventListener('pointermove', (e) => {
+  const r = c.getBoundingClientRect(); c.style.setProperty('--mx', `${e.clientX - r.left}px`);
+}));
 </script>
 </body>
 </html>

@@ -1,0 +1,965 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grbl Sender Console</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  :root {
+    --bg: #05070b; --side: #080b11; --panel: #0d121b; --panel2: #121925; --inset: #070a10;
+    --line: rgba(148, 163, 184, .12); --line2: rgba(148, 163, 184, .24);
+    --text: #e6edf6; --muted: #8b98a9; --dim: #5d6a7c;
+    --cyan: #22d3ee; --violet: #8b5cf6; --ok: #34d399; --warn: #fbbf24; --err: #f87171; --run: #60a5fa;
+    --V: #64748b; --D: #67e8f9; --I: #bef264; --W: #fbbf24; --E: #f87171;
+    --grad: linear-gradient(110deg, #22d3ee 0%, #818cf8 55%, #c084fc 100%);
+    --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: var(--cyan); text-decoration: none; }
+  button, input, select { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+
+  /* ---------- shell ---------- */
+  .shell { display: grid; grid-template-columns: 252px 1fr; height: 100%; }
+  aside.side { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 18px 20px; font-weight: 800; letter-spacing: .04em; color: var(--text); }
+  .brand img { width: 28px; height: 28px; }
+  .brand b { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .brand small { display: block; font: 500 10.5px var(--mono); color: var(--dim); letter-spacing: .1em; }
+  nav.menu { flex: 1; overflow-y: auto; padding: 6px 12px 12px; }
+  .grp { font: 600 10.5px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--dim); padding: 16px 10px 6px; }
+  .nav { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 9px; color: var(--muted); font-weight: 500; position: relative; transition: .15s; }
+  .nav svg { width: 18px; height: 18px; flex: none; }
+  .nav:hover { color: var(--text); background: rgba(255, 255, 255, .035); }
+  .nav.on { color: var(--text); background: linear-gradient(90deg, rgba(34, 211, 238, .12), rgba(139, 92, 246, .06)); }
+  .nav.on::before { content: ""; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--grad); }
+  .nav.on svg { color: var(--cyan); }
+  .nav .cnt { margin-left: auto; font: 600 11px var(--mono); color: var(--dim); }
+  .nav .cnt.live { color: var(--ok); }
+  .side-foot { border-top: 1px solid var(--line); padding: 14px 20px; font: 12px var(--mono); color: var(--dim); display: flex; flex-direction: column; gap: 8px; }
+  .side-foot a { color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); display: inline-block; flex: none; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  header.top { display: flex; align-items: center; gap: 14px; height: 62px; padding: 0 24px; border-bottom: 1px solid var(--line);
+    background: rgba(5, 7, 11, .75); backdrop-filter: blur(12px); flex: none; }
+  .crumb { font: 500 12px var(--mono); color: var(--dim); }
+  .crumb + h1 { margin: 0; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
+  .spacer { flex: 1; }
+  .devpick { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .devpick select { background: transparent; border: 0; outline: 0; max-width: 220px; }
+  .devpick select option { background: var(--panel); }
+  .mpill { font: 700 12px var(--mono); padding: 5px 10px; border-radius: 8px; border: 1px solid currentColor; letter-spacing: .04em; white-space: nowrap; }
+  .burger { display: none; background: none; border: 1px solid var(--line2); border-radius: 9px; width: 38px; height: 38px; cursor: pointer; }
+  .content { flex: 1; overflow-y: auto; padding: 24px; min-height: 0; }
+  .page { max-width: 1400px; margin: 0 auto; }
+  .page.fill { height: 100%; display: flex; flex-direction: column; max-width: none; }
+
+  /* ---------- building blocks ---------- */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; min-width: 0; }
+  .card > h2, .h2 { font: 600 11px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px;
+    display: flex; align-items: center; gap: 10px; }
+  .h2 .spacer { flex: 1; }
+  .grid { display: grid; gap: 16px; }
+  .g2 { grid-template-columns: 1fr 1fr; } .g3 { grid-template-columns: repeat(3, 1fr); }
+  .g-side { grid-template-columns: minmax(320px, 420px) 1fr; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; position: relative; overflow: hidden; }
+  .kpi::after { content: ""; position: absolute; right: -40px; top: -40px; width: 120px; height: 120px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(34, 211, 238, .10), transparent 70%); }
+  .kpi .k { color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+  .kpi .v { font: 700 24px var(--mono); margin-top: 6px; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi .s { color: var(--dim); font: 12px var(--mono); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 13px; border-radius: 9px; border: 1px solid var(--line2);
+    background: var(--panel2); color: var(--text); cursor: pointer; font-weight: 600; font-size: 13px; transition: .15s; white-space: nowrap; }
+  .btn:hover:not(:disabled) { border-color: var(--cyan); }
+  .btn:disabled { opacity: .38; cursor: default; }
+  .btn.primary { background: var(--grad); border: 0; color: #05070b; }
+  .btn.ghost { background: transparent; }
+  .btn.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+  .btn svg { width: 15px; height: 15px; }
+  .btn.sm { padding: 5px 9px; font-size: 12px; }
+  input.in, select.in { background: var(--inset); border: 1px solid var(--line2); border-radius: 9px; padding: 8px 11px; outline: 0; min-width: 0; }
+  input.in:focus, select.in:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > .grow { flex: 1; }
+  .muted { color: var(--muted); } .dim { color: var(--dim); } .mono { font-family: var(--mono); }
+  .empty { color: var(--dim); font: 13px var(--mono); padding: 28px; text-align: center; border: 1px dashed var(--line2); border-radius: 12px; }
+  .badge { font: 700 10.5px var(--mono); padding: 3px 7px; border-radius: 6px; letter-spacing: .04em; white-space: nowrap; }
+  .b-cyan { background: rgba(34, 211, 238, .12); color: var(--cyan); }
+  .b-vio { background: rgba(139, 92, 246, .18); color: #c4b5fd; }
+  .b-ok { background: rgba(52, 211, 153, .12); color: var(--ok); }
+  .b-warn { background: rgba(251, 191, 36, .12); color: var(--warn); }
+  .b-err { background: rgba(248, 113, 113, .12); color: var(--err); }
+  .b-dim { background: rgba(148, 163, 184, .1); color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--dim); font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  tbody tr:hover td { background: rgba(255, 255, 255, .02); }
+  .scroll { overflow-x: auto; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* ---------- machine ---------- */
+  .dro { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 14px 0; }
+  .ax { background: var(--inset); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
+  .ax span { font: 700 11px var(--mono); }
+  .ax div { font: 600 26px var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .ax.x span { color: #fb7185; } .ax.y span { color: #a3e635; } .ax.z span { color: #60a5fa; }
+  .bar { height: 8px; background: var(--inset); border-radius: 4px; overflow: hidden; border: 1px solid var(--line); }
+  .bar > div { height: 100%; width: 0; background: var(--grad); transition: width .4s; }
+  .ctl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .ctl .btn { padding: 14px 6px; font-size: 13.5px; }
+  .c-run { color: var(--ok); } .c-hold { color: var(--warn); } .c-stop { color: var(--err); }
+  .term { font: 12px/1.55 var(--mono); background: var(--inset); border: 1px solid var(--line); border-radius: 10px; overflow: auto; padding: 10px 12px; white-space: pre-wrap; word-break: break-all; }
+  .term .tx { color: var(--cyan); } .term .rx { color: #bef264; } .term .err { color: var(--err); } .term .t { color: var(--dim); }
+
+  /* ---------- files ---------- */
+  .drop { display: block; border: 1.5px dashed var(--line2); border-radius: 14px; padding: 26px; text-align: center; cursor: pointer; transition: .2s; color: var(--muted);
+    background: linear-gradient(135deg, rgba(34, 211, 238, .03), rgba(139, 92, 246, .03)); margin-bottom: 18px; }
+  .drop:hover, .drop.over { border-color: var(--cyan); color: var(--text); background: rgba(34, 211, 238, .06); }
+  .drop svg { width: 30px; height: 30px; color: var(--cyan); display: block; margin: 0 auto 8px; }
+  .drop b { color: var(--text); }
+  .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+  .fcard { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; transition: .2s; }
+  .fcard:hover { border-color: var(--line2); }
+  .thumb { aspect-ratio: 16 / 10; background: var(--inset); border-bottom: 1px solid var(--line); display: grid; place-items: center; cursor: zoom-in; position: relative;
+    background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 20px 20px; }
+  .thumb svg, .thumb img { width: 100%; height: 100%; object-fit: contain; padding: 12px; }
+  .thumb .dim { font: 12px var(--mono); }
+  .fbody { padding: 14px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+  .fname { font: 600 13.5px var(--mono); word-break: break-all; }
+  .fmeta { color: var(--dim); font: 12px var(--mono); }
+  .facts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+  .modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .7); backdrop-filter: blur(6px); z-index: 50; display: grid; place-items: center; padding: 24px; }
+  .modal .box { background: var(--panel); border: 1px solid var(--line2); border-radius: 16px; width: min(900px, 100%); max-height: 100%; overflow: auto; }
+  .modal .mh { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .modal .thumb { cursor: default; aspect-ratio: 4 / 3; border: 0; }
+
+  /* ---------- firmware / apk ---------- */
+  .fw { display: grid; grid-template-columns: 1fr auto; gap: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel2); }
+  .fw + .fw { margin-top: 12px; }
+  .fw.muted-fw { opacity: .6; }
+  .fw h3 { margin: 0 0 4px; font-size: 15px; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+  .kv div { font: 12px var(--mono); color: var(--dim); }
+  .kv b { display: block; color: var(--text); font-weight: 500; word-break: break-all; }
+  .sha { font: 11.5px var(--mono); color: var(--dim); margin-top: 10px; word-break: break-all; display: flex; gap: 8px; align-items: center; }
+  .apkhero { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: center;
+    background: radial-gradient(600px 200px at 0% 0%, rgba(34, 211, 238, .10), transparent 70%), radial-gradient(600px 200px at 100% 100%, rgba(139, 92, 246, .12), transparent 70%), var(--panel); }
+  .apkhero .ver { font: 800 46px var(--mono); letter-spacing: -.04em; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; line-height: 1.1; }
+  #qr { background: #fff; padding: 10px; border-radius: 12px; }
+  #qr img, #qr canvas { display: block; }
+
+  /* ---------- logs ---------- */
+  .logbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .lv { border: 1px solid var(--line2); background: transparent; color: var(--muted); border-radius: 7px; padding: 4px 10px; font: 700 12px var(--mono); cursor: pointer; }
+  .lv.on { color: #05070b; border-color: transparent; }
+  .lv.on[data-l=V] { background: var(--V); } .lv.on[data-l=D] { background: var(--D); } .lv.on[data-l=I] { background: var(--I); }
+  .lv.on[data-l=W] { background: var(--W); } .lv.on[data-l=E] { background: var(--E); }
+  #log { flex: 1; min-height: 300px; padding: 6px 0; }
+  .lr { display: grid; grid-template-columns: 96px 18px 80px 1fr; gap: 10px; padding: 1px 12px; white-space: pre-wrap; word-break: break-word; }
+  .lr.all { grid-template-columns: 96px 90px 18px 80px 1fr; }
+  .lr:hover { background: rgba(255, 255, 255, .03); }
+  .lr .t, .lr .d { color: var(--dim); } .lr .d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lr .g { color: #818cf8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .lr .l { font-weight: 700; }
+  .lr[data-l=V] .m { color: var(--V); } .lr[data-l=D] .m { color: var(--D); } .lr[data-l=I] .m { color: var(--I); }
+  .lr[data-l=W] .m, .lr[data-l=W] .l { color: var(--W); } .lr[data-l=E] .m, .lr[data-l=E] .l { color: var(--E); }
+  .lr[data-l=E] { background: rgba(248, 113, 113, .06); }
+
+  /* ---------- jobs / api ---------- */
+  tr.job { cursor: pointer; }
+  .res-completed { color: var(--ok); } .res-stopped, .res-aborted, .res-disconnected, .res-failed { color: var(--err); } .res-running { color: var(--run); }
+  .ev { font: 12px/1.7 var(--mono); color: var(--muted); background: var(--inset); }
+  .ep { display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .ep:last-child { border-bottom: 0; }
+  .ep .m { font: 700 11px var(--mono); padding: 3px 0; border-radius: 6px; text-align: center; }
+  .ep code { font: 13px var(--mono); color: var(--text); }
+  .ep p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+  pre.code { font: 12.5px/1.6 var(--mono); background: var(--inset); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; margin: 0; color: #cbd5e1; }
+
+  #toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2); border: 1px solid var(--line2); border-left: 3px solid var(--cyan);
+    border-radius: 10px; padding: 12px 16px; max-width: min(420px, 90vw); z-index: 60; box-shadow: 0 20px 50px -10px rgba(0, 0, 0, .6);
+    transform: translateY(20px); opacity: 0; pointer-events: none; transition: .25s; }
+  #toast.show { transform: none; opacity: 1; }
+  #toast.bad { border-left-color: var(--err); }
+
+  @media (max-width: 1100px) { .g-side, .g2 { grid-template-columns: 1fr; } .g3 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    aside.side { position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 40; transform: translateX(-100%); transition: transform .25s; }
+    body.nav-open aside.side { transform: none; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .55); }
+    .burger { display: grid; place-items: center; }
+    header.top { padding: 0 16px; gap: 10px; }
+    .crumb { display: none; }
+    .content { padding: 16px; }
+    .g3 { grid-template-columns: 1fr; }
+    .apkhero { grid-template-columns: 1fr; } #qr { justify-self: start; }
+    .lr, .lr.all { grid-template-columns: 78px 14px 1fr; } .lr .g, .lr .d { display: none; }
+    .devpick select { max-width: 120px; }
+    .fw { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 520px) { #topState { display: none; } .ax div { font-size: 19px; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="/"><img src="/favicon.svg" alt=""><span>GRBL<b>·SENDER</b><small>CONSOLE</small></span></a>
+    <nav class="menu" id="menu">
+      <div class="grp">Workspace</div>
+      <a class="nav" href="#overview" data-page="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</a>
+      <div class="grp">Files</div>
+      <a class="nav" href="#files" data-page="files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h2l2 4 2-4h2"/></svg>NC files<span class="cnt" id="nNc"></span></a>
+      <a class="nav" href="#firmware" data-page="firmware"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></svg>Firmware files<span class="cnt" id="nFw"></span></a>
+      <a class="nav" href="#apk" data-page="apk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>APK files<span class="cnt" id="nApk"></span></a>
+      <div class="grp">Operate</div>
+      <a class="nav" href="#remote" data-page="remote"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a14 14 0 0 1 20 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/></svg>Remote control<span class="cnt" id="nRemote"></span></a>
+      <a class="nav" href="#jobs" data-page="jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Job log</a>
+      <div class="grp">Diagnostics</div>
+      <a class="nav" href="#logs" data-page="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h13"/></svg>Logs<span class="cnt" id="nLogs"></span></a>
+      <a class="nav" href="#devices" data-page="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Devices<span class="cnt" id="nDev"></span></a>
+      <div class="grp">Developer</div>
+      <a class="nav" href="#api" data-page="api"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5m8-10 5 5-5 5M14 4l-4 16"/></svg>HTTP API</a>
+    </nav>
+    <div class="side-foot">
+      <span style="display:flex;align-items:center;gap:8px"><span class="dot" id="liveDot"></span><span id="liveTxt">connecting…</span></span>
+      <a href="/">← Landing page</a>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <button class="burger" id="burger" aria-label="Menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+      <div><div class="crumb">console / <span id="crumb">overview</span></div><h1 id="title">Overview</h1></div>
+      <span class="spacer"></span>
+      <span class="mpill" id="topState" style="color:var(--dim)">—</span>
+      <label class="devpick" title="Tablet used by Remote control and Job log"><span class="dot" id="onDot"></span><select id="device" aria-label="Tablet"></select></label>
+    </header>
+
+    <div class="content" id="content">
+      <!-- OVERVIEW -->
+      <section class="page" data-page="overview">
+        <div class="kpis">
+          <div class="kpi"><div class="k">Tablet</div><div class="v" id="kTab">—</div><div class="s" id="kTabS">&nbsp;</div></div>
+          <div class="kpi"><div class="k">Machine</div><div class="v" id="kMach">—</div><div class="s" id="kMachS">&nbsp;</div></div>
+          <div class="kpi"><div class="k">Jobs</div><div class="v" id="kJobs">—</div><div class="s" id="kJobsS">&nbsp;</div></div>
+          <div class="kpi"><div class="k">Log lines</div><div class="v" id="kLogs">—</div><div class="s" id="kLogsS">&nbsp;</div></div>
+          <div class="kpi"><div class="k">App release</div><div class="v" id="kApk">—</div><div class="s" id="kApkS">&nbsp;</div></div>
+        </div>
+        <div class="grid g-side">
+          <div class="card">
+            <div class="h2">Live machine<span class="spacer"></span><a href="#remote" class="btn sm ghost">Control →</a></div>
+            <div class="row"><span class="mpill" id="oState">—</span><span class="dim mono" id="oUsb" style="font-size:12px"></span></div>
+            <div class="dro">
+              <div class="ax x"><span>X</span><div data-ax="0">—</div></div>
+              <div class="ax y"><span>Y</span><div data-ax="1">—</div></div>
+              <div class="ax z"><span>Z</span><div data-ax="2">—</div></div>
+            </div>
+            <div class="bar"><div data-prog></div></div>
+            <div class="dim mono" style="font-size:12px;margin-top:8px" data-job>No job</div>
+          </div>
+          <div class="card">
+            <div class="h2">Recent jobs<span class="spacer"></span><a href="#jobs" class="btn sm ghost">All jobs →</a></div>
+            <div class="scroll"><table><thead><tr><th>Started</th><th>File</th><th>Result</th><th>Duration</th></tr></thead><tbody id="oJobs"></tbody></table></div>
+          </div>
+        </div>
+        <div class="grid g3" style="margin-top:16px">
+          <a class="card" href="#files"><div class="h2">NC files</div><div class="mono" style="font-size:26px;font-weight:700" id="oNc">—</div><div class="dim">Upload, preview and send to the tablet</div></a>
+          <a class="card" href="#firmware"><div class="h2">Firmware</div><div class="mono" style="font-size:26px;font-weight:700" id="oFw">—</div><div class="dim">Pro Mini · Blue / Black Pill builds</div></a>
+          <a class="card" href="#logs"><div class="h2">Errors (loaded)</div><div class="mono" style="font-size:26px;font-weight:700;color:var(--err)" id="oErr">—</div><div class="dim">E-level lines in the log buffer</div></a>
+        </div>
+      </section>
+
+      <!-- NC FILES -->
+      <section class="page" data-page="files" hidden>
+        <label class="drop" id="drop">
+          <input type="file" id="upload" accept=".nc,.gcode,.ngc,.tap" multiple hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 16V4m0 0-5 5m5-5 5 5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+          <div><b>Drop NC files here</b> or click to browse</div>
+          <div class="dim mono" style="font-size:12px">.nc · .gcode · .ngc · .tap — up to 50 MB</div>
+        </label>
+        <div class="row" style="margin-bottom:14px">
+          <input class="in grow" type="search" id="ncQ" placeholder="Filter files…">
+          <span class="dim mono" id="ncCount"></span>
+        </div>
+        <div class="files" id="ncGrid"></div>
+      </section>
+
+      <!-- FIRMWARE -->
+      <section class="page" data-page="firmware" hidden>
+        <div class="grid g2" style="align-items:start">
+          <div class="card"><div class="h2"><span class="badge b-cyan">AVR</span> Arduino Pro Mini · ATmega328P</div><div id="fwAvr"></div></div>
+          <div class="card"><div class="h2"><span class="badge b-vio">STM32</span> STM32F103 · Blue / Black Pill</div><div id="fwStm"></div></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="h2">Publishing</div>
+          <div class="muted">New images are added on the server with <code class="mono" style="color:var(--cyan)">backoffice/publish-firmware.sh</code>. The app's firmware updater offers the newest <span class="badge b-cyan">promini</span> and <span class="badge b-vio">bluepill</span> builds; 128 KB-only images are listed here but not offered in the app.</div>
+        </div>
+      </section>
+
+      <!-- APK -->
+      <section class="page" data-page="apk" hidden>
+        <div class="card apkhero">
+          <div>
+            <div class="h2" style="margin-bottom:6px">Latest release</div>
+            <div class="ver" id="apkVer">v—</div>
+            <div class="muted" id="apkMeta" style="margin:6px 0 16px">No release published</div>
+            <div class="row">
+              <a class="btn primary" href="/apk/latest.apk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>Download latest</a>
+              <button class="btn" id="copyApk">Copy link</button>
+            </div>
+            <div class="dim mono" style="font-size:12px;margin-top:12px" id="apkUrl"></div>
+          </div>
+          <div id="qr"></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="h2">Release history<span class="spacer"></span><span class="dim" style="text-transform:none;letter-spacing:0">publish with <code>publish-apk.sh</code></span></div>
+          <div class="scroll"><table><thead><tr><th>Version</th><th>Build</th><th>Published</th><th>Size</th><th>Notes</th><th></th></tr></thead><tbody id="apkRows"></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- REMOTE -->
+      <section class="page" data-page="remote" hidden>
+        <div class="grid g-side">
+          <div class="grid" style="align-content:start">
+            <div class="card">
+              <h2>Machine</h2>
+              <div class="row"><span class="mpill" id="rState">—</span><span class="dim mono" id="rUsb" style="font-size:12px"></span></div>
+              <div class="dro">
+                <div class="ax x"><span>X</span><div data-ax="0">—</div></div>
+                <div class="ax y"><span>Y</span><div data-ax="1">—</div></div>
+                <div class="ax z"><span>Z</span><div data-ax="2">—</div></div>
+              </div>
+              <div class="bar"><div data-prog></div></div>
+              <div class="dim mono" style="font-size:12px;margin-top:8px" data-job>No job</div>
+              <div class="muted" style="font-size:12.5px;margin-top:8px" id="rRemote"></div>
+            </div>
+            <div class="card">
+              <h2>Control</h2>
+              <div class="ctl">
+                <button class="btn c-run" data-cmd="run">▶ Run</button>
+                <button class="btn c-hold" data-cmd="hold">❚❚ Hold</button>
+                <button class="btn" data-cmd="resume">⏵ Resume</button>
+                <button class="btn c-stop" data-cmd="stop">■ Stop</button>
+                <button class="btn" data-cmd="unlock">$X Unlock</button>
+                <button class="btn" data-cmd="home">$H Home</button>
+                <button class="btn" data-cmd="reset">↺ Reset</button>
+                <button class="btn" data-cmd="zero" data-axes="XY">Zero XY</button>
+                <button class="btn" data-cmd="zero" data-axes="Z">Zero Z</button>
+              </div>
+              <div class="row" style="margin-top:12px">
+                <select class="in grow" id="rFile" aria-label="NC file on the backoffice"></select>
+                <button class="btn" id="rLoad" data-cmd-x="load">⇩ Load</button>
+                <button class="btn c-run" id="rRunFile" data-cmd-x="run">▶ Run file</button>
+              </div>
+              <div class="row" style="margin-top:8px">
+                <input class="in grow mono" id="rLine" placeholder="G-code or $ command" autocomplete="off" spellcheck="false">
+                <button class="btn" id="rSend" data-cmd-x="send">Send</button>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="display:flex;flex-direction:column">
+            <h2>Console<span class="spacer"></span><button class="btn sm ghost" id="rClear">Clear view</button></h2>
+            <div class="term" id="rConsole" style="flex:1;min-height:420px;max-height:calc(100vh - 200px)"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- JOBS -->
+      <section class="page" data-page="jobs" hidden>
+        <div class="kpis">
+          <div class="kpi"><div class="k">Jobs logged</div><div class="v" id="jN">—</div></div>
+          <div class="kpi"><div class="k">Completed</div><div class="v" id="jOk" style="color:var(--ok)">—</div></div>
+          <div class="kpi"><div class="k">Stopped / failed</div><div class="v" id="jBad" style="color:var(--err)">—</div></div>
+          <div class="kpi"><div class="k">Cutting time</div><div class="v" id="jT">—</div></div>
+        </div>
+        <div class="card">
+          <div class="h2">Job log<span class="spacer"></span><label class="dim" style="text-transform:none;letter-spacing:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="jAll"> all tablets</label></div>
+          <div class="scroll"><table><thead><tr><th>Started</th><th>File</th><th>Result</th><th>Lines</th><th>Errors</th><th>Duration</th><th>Paused</th></tr></thead><tbody id="jobs"></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- LOGS -->
+      <section class="page fill" data-page="logs" hidden>
+        <div class="logbar">
+          <span class="row" style="gap:4px">
+            <button class="lv on" data-l="V">V</button><button class="lv on" data-l="D">D</button><button class="lv on" data-l="I">I</button>
+            <button class="lv on" data-l="W">W</button><button class="lv on" data-l="E">E</button>
+          </span>
+          <select class="in" id="logDev"><option value="">All devices</option></select>
+          <input class="in" type="search" id="q" placeholder="Filter text / tag…" style="min-width:200px">
+          <label class="dim" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="follow" checked> Follow</label>
+          <button class="btn" id="pause">Pause</button>
+          <span class="spacer"></span>
+          <span class="dim mono" id="count" style="font-size:12px"></span>
+          <button class="btn" id="export">Export .txt</button>
+          <button class="btn danger" id="clear">Clear logs</button>
+        </div>
+        <div class="term" id="log" style="padding:6px 0"></div>
+      </section>
+
+      <!-- DEVICES -->
+      <section class="page" data-page="devices" hidden>
+        <div class="card">
+          <h2>Tablets</h2>
+          <div class="scroll"><table><thead><tr><th></th><th>Device</th><th>Android</th><th>App</th><th>IP</th><th>Log lines</th><th>First seen</th><th>Last seen</th><th></th></tr></thead><tbody id="devRows"></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- API -->
+      <section class="page" data-page="api" hidden>
+        <div class="grid g2">
+          <div class="card">
+            <h2>Remote-control API</h2>
+            <p class="muted" style="margin-top:0">Authenticate with the dashboard login or <code class="mono" style="color:var(--cyan)">Authorization: Bearer CNC_API_KEY</code>.</p>
+            <div id="eps"></div>
+          </div>
+          <div class="grid" style="align-content:start">
+            <div class="card"><h2>Example<span class="spacer"></span><button class="btn sm" data-copy="#ex1">Copy</button></h2><pre class="code" id="ex1"></pre></div>
+            <div class="card"><h2>Public endpoints</h2><div id="eps2"></div></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal" hidden><div class="box">
+  <div class="mh"><span class="mono" id="mTitle" style="font-weight:600"></span><span class="spacer"></span><button class="btn sm" id="mClose">Close ✕</button></div>
+  <div class="thumb" id="mBody"></div><div class="dim mono" id="mInfo" style="padding:12px 18px;font-size:12px"></div>
+</div></div>
+<div id="toast"></div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const pad = (n) => String(n).padStart(2, '0');
+const hms = (s) => { s = Math.max(0, Math.round(s || 0)); return s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}` : `${Math.floor(s / 60)}:${pad(s % 60)}`; };
+const fmt = (ts) => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+const kb = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
+const date = (t) => new Date(t).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const ago = (ts) => { const s = Math.round((Date.now() - ts) / 1000); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : s < 86400 ? Math.round(s / 3600) + 'h ago' : date(ts); };
+const ICON_DL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>';
+
+function toast(msg, bad = false) {
+  const t = $('#toast'); t.textContent = msg; t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.className = ''), 4000);
+}
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  return body;
+}
+
+/* =========================================================== router */
+const TITLES = { overview: 'Overview', files: 'NC files', firmware: 'Firmware files', apk: 'APK files', remote: 'Remote control',
+  jobs: 'Job log', logs: 'Logs', devices: 'Devices', api: 'HTTP API' };
+let page = 'overview';
+function route() {
+  page = (location.hash.slice(1) || 'overview');
+  if (!TITLES[page]) page = 'overview';
+  $$('.page').forEach((s) => (s.hidden = s.dataset.page !== page));
+  $$('.nav').forEach((a) => a.classList.toggle('on', a.dataset.page === page));
+  $('#title').textContent = TITLES[page]; $('#crumb').textContent = page;
+  document.title = `${TITLES[page]} · Grbl Sender Console`;
+  document.body.classList.remove('nav-open');
+  $('#content').scrollTop = 0;
+  ({ overview: loadJobs, files: loadFiles, firmware: loadFirmware, apk: loadReleases, jobs: loadJobs, devices: loadDevices, logs: () => render() }[page] || (() => {}))();
+  if (page === 'logs' || page === 'remote') { const el = page === 'logs' ? $('#log') : $('#rConsole'); el.scrollTop = el.scrollHeight; }
+}
+addEventListener('hashchange', route);
+$('#burger').onclick = () => document.body.classList.toggle('nav-open');
+$('aside.side').addEventListener('click', (e) => { if (e.target === e.currentTarget) document.body.classList.remove('nav-open'); });
+
+/* =========================================================== live status (remote API) */
+let device = '', status = null, tablets = [];
+function colorOf(st) {
+  if (!st) return 'var(--dim)';
+  if (st.startsWith('Alarm')) return 'var(--err)';
+  if (st.startsWith('Hold') || st.startsWith('Door')) return 'var(--warn)';
+  if (st.startsWith('Run') || st.startsWith('Jog')) return 'var(--run)';
+  return 'var(--ok)';
+}
+function renderStatus(d) {
+  const s = d?.status || {};
+  status = s;
+  $('#onDot').className = 'dot' + (d?.online ? ' on' : '');
+  const st = !d ? 'NO TABLET' : !d.online ? 'OFFLINE' : s.connected ? (s.machine || 'Connected') : 'USB OFF';
+  const col = d?.online && s.connected ? colorOf(s.machine) : 'var(--dim)';
+  for (const id of ['#topState', '#oState', '#rState']) { const el = $(id); el.textContent = st + (s.streaming ? ' ▶' : ''); el.style.color = col; }
+  const usb = [s.boardName, s.usb, s.fw && `Grbl ${s.fw}`].filter(Boolean).join(' · ');
+  $('#oUsb').textContent = usb; $('#rUsb').textContent = usb;
+  const w = s.wpos || [];
+  $$('[data-ax]').forEach((el) => { const v = w[el.dataset.ax]; el.textContent = v !== undefined ? Number(v).toFixed(3) : '—'; });
+  $$('[data-prog]').forEach((el) => (el.style.width = `${(s.permille || 0) / 10}%`));
+  let job = s.file ? `${s.file}${s.dirty ? ' •' : ''}` : 'No file';
+  if (s.streaming) job += ` · line ${s.acked} / ${s.lines} · ${hms(s.elapsedSec)}${s.etaSec != null ? ` · ${hms(s.etaSec)} left` : ''}${s.errors ? ` · ${s.errors} errors` : ''}`;
+  else if (s.loaded) job += ` · loaded ${s.lines} lines${s.estSec ? ` · est. ${hms(s.estSec)}` : ''}`;
+  $$('[data-job]').forEach((el) => (el.textContent = job));
+  $('#rRemote').textContent = !d ? 'No tablet has connected yet. Open Grbl Sender on the tablet.'
+    : s.remoteControl === false ? '🔒 Remote control is off on the tablet: only Hold, Stop and status work.' : '🔓 Remote control allowed by the tablet';
+  const locked = !d?.online, ro = s.remoteControl === false;
+  $$('[data-cmd]').forEach((b) => { const safe = b.dataset.cmd === 'hold' || b.dataset.cmd === 'stop'; b.disabled = locked || (!safe && ro); });
+  $$('[data-cmd-x]').forEach((b) => (b.disabled = locked || ro));
+  $('#nRemote').textContent = d?.online ? '●' : ''; $('#nRemote').className = 'cnt' + (d?.online ? ' live' : '');
+  // overview KPIs
+  $('#kTab').textContent = !d ? 'none' : d.online ? 'Online' : 'Offline';
+  $('#kTab').style.color = d?.online ? 'var(--ok)' : 'var(--dim)';
+  $('#kTabS').textContent = d ? `${d.model || d.device.slice(0, 8)} · app ${d.app || '?'}` : 'waiting for a tablet';
+  $('#kMach').textContent = st; $('#kMach').style.color = col;
+  $('#kMachS').textContent = usb || ' ';
+}
+async function poll() {
+  try {
+    tablets = await api('/api/cnc');
+    const sel = $('#device'), keep = sel.value;
+    sel.innerHTML = tablets.map((d) => `<option value="${esc(d.device)}">${esc(d.model || d.device.slice(0, 8))}${d.online ? '' : ' (offline)'}</option>`).join('') || '<option value="">no tablet</option>';
+    if (keep && tablets.some((d) => d.device === keep)) sel.value = keep;
+    const changed = device !== sel.value;
+    device = sel.value;
+    renderStatus(tablets.find((d) => d.device === device));
+    if (changed && (page === 'jobs' || page === 'overview')) loadJobs();
+  } catch (e) { $('#topState').textContent = e.message; }
+  setTimeout(poll, 1000);
+}
+$('#device').onchange = () => { device = $('#device').value; renderStatus(tablets.find((d) => d.device === device)); loadJobs(); };
+
+/* =========================================================== remote control */
+async function command(cmd, extra = {}) {
+  if ((cmd === 'run' || cmd === 'reset' || cmd === 'home') && !confirm(`Send "${cmd}" to the machine? Make sure the router is safe to move.`)) return;
+  try {
+    const c = await api('/api/cnc/command', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd, device, wait: true, ...extra }) });
+    toast(c.state === 'done' ? `✔ ${cmd}: ${c.result || 'ok'}` : c.state === 'failed' ? `✖ ${cmd}: ${c.result}` : `${cmd}: ${c.state}`, c.state === 'failed');
+  } catch (e) { toast(`✖ ${cmd}: ${e.message}`, true); }
+}
+$$('[data-cmd]').forEach((b) => b.addEventListener('click', () => command(b.dataset.cmd, b.dataset.axes ? { axes: b.dataset.axes } : {})));
+$('#rLoad').onclick = () => $('#rFile').value && command('load', { file: $('#rFile').value });
+$('#rRunFile').onclick = () => $('#rFile').value && command('run', { file: $('#rFile').value });
+$('#rSend').onclick = () => { const l = $('#rLine').value.trim(); if (l) { command('send', { line: l }); $('#rLine').value = ''; } };
+$('#rLine').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#rSend').click(); });
+$('#rClear').onclick = () => ($('#rConsole').innerHTML = '');
+
+let consoleSeq = 0, consoleDev = '';
+async function pollConsole() {
+  try {
+    if (device) {
+      const box = $('#rConsole');
+      if (consoleDev !== device) { consoleDev = device; consoleSeq = 0; box.innerHTML = ''; }
+      const r = await api(`/api/cnc/console?device=${encodeURIComponent(device)}&after=${consoleSeq}`);
+      const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+      for (const l of r.lines) {
+        consoleSeq = l.seq;
+        const cls = l.text.startsWith('>>') ? 'tx' : /error|alarm|fail/i.test(l.text) ? 'err' : 'rx';
+        box.insertAdjacentHTML('beforeend', `<div class="${cls}"><span class="t">${fmt(l.ts)}</span> ${esc(l.text)}</div>`);
+      }
+      while (box.childElementCount > 1500) box.firstElementChild.remove();
+      if (atEnd || page !== 'remote') box.scrollTop = box.scrollHeight;
+    }
+  } catch { /* shown by poll() */ }
+  setTimeout(pollConsole, page === 'remote' ? 1000 : 4000);
+}
+
+/* =========================================================== jobs */
+let openJob = null;
+async function loadJobs() {
+  try {
+    const all = $('#jAll').checked;
+    const rows = await api(`/api/jobs?limit=200${device && !all ? `&device=${encodeURIComponent(device)}` : ''}`);
+    const ok = rows.filter((j) => j.result === 'completed').length;
+    const bad = rows.filter((j) => j.result && j.result !== 'completed').length;
+    const cut = rows.reduce((a, j) => a + (j.ended && j.started ? (j.ended - j.started - (j.paused_ms || 0)) / 1000 : 0), 0);
+    $('#jN').textContent = rows.length; $('#jOk').textContent = ok; $('#jBad').textContent = bad; $('#jT').textContent = hms(cut);
+    $('#kJobs').textContent = rows.length;
+    $('#kJobsS').textContent = rows.length ? `${ok} completed · ${Math.round(ok / rows.length * 100)}%` : 'none yet';
+    const tr = (j, full) => {
+      const dur = j.ended && j.started ? (j.ended - j.started) / 1000 : null;
+      const res = j.result || 'running';
+      const cells = [`<td class="num">${j.started ? fmt(j.started) : '—'}</td>`, `<td class="mono">${esc(j.file)}</td>`,
+        `<td class="res-${esc(res)}">${esc(res === 'running' ? 'running…' : res)}</td>`];
+      if (full) cells.push(`<td class="num">${j.last_line ?? '—'} / ${j.lines ?? '—'}</td>`, `<td class="num">${j.errors || '—'}</td>`);
+      cells.push(`<td class="num">${dur != null ? hms(dur) : '—'}</td>`);
+      if (full) cells.push(`<td class="num">${j.paused_ms ? hms(j.paused_ms / 1000) : '—'}</td>`);
+      return cells.join('');
+    };
+    $('#oJobs').innerHTML = rows.slice(0, 6).map((j) => `<tr>${tr(j, false)}</tr>`).join('') || '<tr><td colspan="4" class="dim">No jobs logged yet</td></tr>';
+    const out = [];
+    for (const j of rows) {
+      out.push(`<tr class="job" data-id="${esc(j.id)}">${tr(j, true)}</tr>`);
+      if (openJob === j.id) out.push(`<tr><td colspan="7" id="ev-${esc(j.id)}" class="ev">loading…</td></tr>`);
+    }
+    $('#jobs').innerHTML = out.join('') || '<tr><td colspan="7" class="dim">No jobs logged yet</td></tr>';
+    if (openJob) showEvents(openJob);
+  } catch { /* ignore */ }
+}
+async function showEvents(id) {
+  const cell = document.getElementById('ev-' + id);
+  if (!cell) return;
+  const j = await api('/api/jobs/' + encodeURIComponent(id));
+  cell.innerHTML = j.events.map((e) => `${fmt(e.ts)}  ${esc(e.event.padEnd(8))} ${e.line != null ? 'line ' + e.line : ''} ${esc(e.detail || '')}`).join('<br>') || 'no events';
+}
+$('#jobs').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr.job'); if (!tr) return;
+  openJob = openJob === tr.dataset.id ? null : tr.dataset.id; loadJobs();
+});
+$('#jAll').onchange = loadJobs;
+
+/* =========================================================== NC files */
+let ncFiles = [];
+const previews = new Map();     // name -> svg markup
+async function loadFiles() {
+  ncFiles = await api('/api/gcode').catch(() => []);
+  $('#nNc').textContent = ncFiles.length || ''; $('#oNc').textContent = ncFiles.length;
+  const sel = $('#rFile'), keep = sel.value;
+  sel.innerHTML = ncFiles.map((f) => `<option>${esc(f.name)}</option>`).join('') || '<option value="">no files</option>';
+  if (keep) sel.value = keep;
+  renderFiles();
+}
+function renderFiles() {
+  const q = $('#ncQ').value.toLowerCase();
+  const list = ncFiles.filter((f) => !q || f.name.toLowerCase().includes(q) || (f.title || '').toLowerCase().includes(q));
+  $('#ncCount').textContent = `${list.length} file${list.length === 1 ? '' : 's'}`;
+  const grid = $('#ncGrid');
+  if (!list.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1">No NC files yet. Drop one above.</div>'; return; }
+  grid.innerHTML = list.map((f) => `<div class="fcard" data-name="${esc(f.name)}">
+      <div class="thumb" data-act="view"><span class="dim">rendering…</span></div>
+      <div class="fbody"><div><div class="fname">${esc(f.name)}</div>
+        <div class="fmeta">${kb(f.size)} · ${date(f.modified)}${f.title ? '<br>' + esc(f.title) : ''}</div></div>
+        <div class="facts">
+          <a class="btn sm" href="/gcode/${encodeURIComponent(f.name)}" download>${ICON_DL}</a>
+          <button class="btn sm" data-act="load" title="Load on the tablet">⇩ Load</button>
+          <button class="btn sm c-run" data-act="run" title="Run on the tablet">▶ Run</button>
+          <span class="spacer"></span>
+          <button class="btn sm danger ghost" data-act="del" title="Delete">✕</button>
+        </div></div></div>`).join('');
+  for (const card of $$('.fcard', grid)) fillThumb(card.dataset.name, $('.thumb', card));
+}
+async function fillThumb(name, el) {
+  const f = ncFiles.find((x) => x.name === name);
+  if (previews.has(name)) { el.innerHTML = previews.get(name).svg; return; }
+  if (f.size > 3 * 1048576) {
+    el.innerHTML = f.preview ? `<img src="/gcode/${encodeURIComponent(f.preview)}" alt="">` : '<span class="dim">too large to preview</span>'; return;
+  }
+  try {
+    const text = await fetch('/gcode/' + encodeURIComponent(name)).then((r) => r.text());
+    const p = gcodeSvg(text);
+    previews.set(name, p);
+    el.innerHTML = p.svg;
+  } catch { el.innerHTML = '<span class="dim">no preview</span>'; }
+}
+// Parse G0/G1/G2/G3 in XY into an SVG thumbnail (rapids dashed, cuts gradient)
+function gcodeSvg(text) {
+  let x = 0, y = 0, z = 0, abs = true, mode = 0, inch = false;
+  const cut = [], rapid = [];
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, lines = 0, minZ = Infinity;
+  const ext = (px, py) => { minX = Math.min(minX, px); maxX = Math.max(maxX, px); minY = Math.min(minY, py); maxY = Math.max(maxY, py); };
+  for (let raw of text.split('\n')) {
+    const line = raw.replace(/\(.*?\)|;.*/g, '').toUpperCase();
+    if (!line.trim()) continue;
+    lines++;
+    const words = {}; const gs = [];
+    for (const m of line.matchAll(/([A-Z])\s*([-+]?\d*\.?\d+)/g)) { if (m[1] === 'G') gs.push(Number(m[2])); else words[m[1]] = Number(m[2]); }
+    for (const g of gs) { if (g === 90) abs = true; else if (g === 91) abs = false; else if (g === 20) inch = true; else if (g === 21) inch = false; else if (g <= 3) mode = g; }
+    if (!('X' in words || 'Y' in words || 'Z' in words)) continue;
+    const nx = 'X' in words ? (abs ? words.X : x + words.X) : x;
+    const ny = 'Y' in words ? (abs ? words.Y : y + words.Y) : y;
+    if ('Z' in words) z = abs ? words.Z : z + words.Z;
+    const arc = (mode === 2 || mode === 3) && ('I' in words || 'J' in words);
+    if (nx === x && ny === y && !arc) continue;   // a full circle ends where it starts
+    const pts = [[x, y]];
+    if (arc) {
+      const cx = x + (words.I || 0), cy = y + (words.J || 0), r = Math.hypot(x - cx, y - cy);
+      let a0 = Math.atan2(y - cy, x - cx), a1 = Math.atan2(ny - cy, nx - cx);
+      let sweep = a1 - a0;
+      if (mode === 2) { if (sweep >= 0) sweep -= 2 * Math.PI; } else if (sweep <= 0) sweep += 2 * Math.PI;
+      const n = Math.max(8, Math.ceil(Math.abs(sweep) * 12));
+      for (let i = 1; i <= n; i++) { const a = a0 + sweep * i / n; pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); }
+    } else pts.push([nx, ny]);
+    (mode === 0 ? rapid : cut).push(pts);
+    if (mode !== 0) { minZ = Math.min(minZ, z); for (const p of pts) ext(p[0], p[1]); }
+    x = nx; y = ny;
+  }
+  if (!cut.length) return { svg: '<span class="dim">no XY moves</span>', info: `${lines} lines` };
+  const w = maxX - minX || 1, h = maxY - minY || 1, m = Math.max(w, h) * 0.04;
+  const vb = `${minX - m} ${-(maxY + m)} ${w + 2 * m} ${h + 2 * m}`;
+  const sw = Math.max(w, h) / 300;
+  const d = (segs) => segs.map((s) => 'M' + s.map((p) => `${p[0].toFixed(3)} ${(-p[1]).toFixed(3)}`).join('L')).join('');
+  const u = inch ? 'in' : 'mm';
+  return {
+    svg: `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet"><defs><linearGradient id="gc" x1="0" x2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs>
+      <path d="${d(rapid)}" fill="none" stroke="rgba(148,163,184,.35)" stroke-width="${sw}" stroke-dasharray="${sw * 4} ${sw * 4}"/>
+      <path d="${d(cut)}" fill="none" stroke="url(#gc)" stroke-width="${sw * 1.6}" stroke-linejoin="round" stroke-linecap="round"/></svg>`,
+    info: `${lines} lines · ${w.toFixed(1)} × ${h.toFixed(1)} ${u} · X ${minX.toFixed(1)}…${maxX.toFixed(1)} · Y ${minY.toFixed(1)}…${maxY.toFixed(1)} · min Z ${minZ.toFixed(2)}`,
+  };
+}
+$('#ncGrid').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const name = b.closest('.fcard').dataset.name, act = b.dataset.act;
+  if (act === 'view') {
+    const p = previews.get(name);
+    $('#mTitle').textContent = name; $('#mBody').innerHTML = p ? p.svg : b.innerHTML; $('#mInfo').textContent = p ? p.info : '';
+    $('#modal').hidden = false;
+  } else if (act === 'load' || act === 'run') {
+    if (!device) return toast('No tablet connected', true);
+    command(act, { file: name });
+  } else if (act === 'del') {
+    if (!confirm(`Delete ${name} from the server?`)) return;
+    try { await api('/api/gcode/' + encodeURIComponent(name), { method: 'DELETE' }); previews.delete(name); toast(`✔ Deleted ${name}`); loadFiles(); }
+    catch (err) { toast('✖ ' + err.message, true); }
+  }
+});
+$('#mClose').onclick = () => ($('#modal').hidden = true);
+$('#modal').onclick = (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; };
+addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#modal').hidden = true; });
+$('#ncQ').oninput = renderFiles;
+async function uploadFiles(files) {
+  for (const f of files) {
+    try {
+      await api('/api/gcode/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+      previews.delete(f.name); toast(`✔ Uploaded ${f.name}`);
+    } catch (e) { toast(`✖ ${f.name}: ${e.message}`, true); }
+  }
+  loadFiles();
+}
+$('#upload').onchange = (e) => { uploadFiles([...e.target.files]); e.target.value = ''; };
+const drop = $('#drop');
+['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', (e) => uploadFiles([...e.dataTransfer.files]));
+
+/* =========================================================== firmware */
+async function loadFirmware() {
+  const list = await api('/api/firmware').catch(() => []);
+  $('#nFw').textContent = list.length || ''; $('#oFw').textContent = list.length;
+  const box = { avr: $('#fwAvr'), stm: $('#fwStm') };
+  box.avr.innerHTML = box.stm.innerHTML = '';
+  const first = {};
+  for (const f of list) {
+    const k = f.target === 'promini' ? 'avr' : 'stm';
+    const offered = f.target === 'promini' || f.target === 'bluepill';
+    const star = offered && !first[k]; if (star) first[k] = true;
+    const el = document.createElement('div');
+    el.className = 'fw' + (offered ? '' : ' muted-fw');
+    const kv = [['version', f.version], ['format', `.${f.format || 'hex'}`], ['size', kb(f.size)], ['address', f.address],
+      ['mcu', f.mcu], ['clock', f.clockHz ? f.clockHz / 1e6 + ' MHz' : null], ['baud', f.baud || (f.format === 'bin' ? 'USB CDC' : null)], ['published', date(f.published)]];
+    el.innerHTML = `<div style="min-width:0">
+        <div class="row" style="gap:6px;margin-bottom:6px">${star ? '<span class="badge b-ok">OFFERED IN APP</span>' : ''}${offered ? '' : '<span class="badge b-warn">128 KB CHIPS ONLY</span>'}<span class="badge b-dim">${esc(f.target)}</span></div>
+        <h3>${esc(f.name)}</h3>${f.notes ? `<div class="muted" style="font-size:13px">${esc(f.notes)}</div>` : ''}
+        <div class="kv">${kv.filter((x) => x[1]).map(([a, b]) => `<div>${a}<b>${esc(b)}</b></div>`).join('')}</div>
+        ${f.sha256 ? `<div class="sha">sha256 ${esc(f.sha256)} <button class="btn sm" data-sha="${esc(f.sha256)}">Copy</button></div>` : ''}
+      </div>
+      <div><a class="btn primary" href="${esc(f.url)}" download>${ICON_DL}.${esc(f.format || 'hex')}</a></div>`;
+    box[k].appendChild(el);
+  }
+  for (const k in box) if (!box[k].childElementCount) box[k].innerHTML = '<div class="empty">No firmware published</div>';
+}
+document.addEventListener('click', (e) => {
+  const s = e.target.closest('[data-sha]'); if (s) { navigator.clipboard?.writeText(s.dataset.sha); toast('✔ sha256 copied'); }
+  const c = e.target.closest('[data-copy]'); if (c) { navigator.clipboard?.writeText($(c.dataset.copy).textContent); toast('✔ Copied'); }
+});
+
+/* =========================================================== APK */
+let qrDone = false;
+async function loadReleases() {
+  const rels = await api('/api/releases').catch(() => []);
+  $('#nApk').textContent = rels.length || '';
+  const latest = rels[0];
+  if (!latest) { $('#apkRows').innerHTML = '<tr><td colspan="6" class="dim">No releases</td></tr>'; return; }
+  const url = `${location.origin}/apk/latest.apk`;
+  $('#kApk').textContent = 'v' + latest.versionName;
+  $('#kApkS').textContent = `build ${latest.versionCode} · ${ago(latest.published)}`;
+  $('#apkVer').textContent = 'v' + latest.versionName;
+  $('#apkMeta').textContent = `Build ${latest.versionCode} · ${kb(latest.size)} · ${date(latest.published)}` + (latest.notes ? ` — ${latest.notes}` : '');
+  $('#apkUrl').textContent = url;
+  if (!qrDone && window.QRCode) { new QRCode($('#qr'), { text: url, width: 150, height: 150, colorDark: '#05070b' }); qrDone = true; }
+  else if (!window.QRCode) $('#qr').remove();
+  $('#apkRows').innerHTML = rels.map((r, i) => `<tr><td class="mono"><b>v${esc(r.versionName)}</b> ${i === 0 ? '<span class="badge b-ok">LATEST</span>' : ''}</td>
+    <td class="num">${r.versionCode}</td><td class="num">${date(r.published)}</td><td class="num">${kb(r.size)}</td>
+    <td class="muted">${esc(r.notes || '')}</td><td><a class="btn sm" href="/apk/${encodeURIComponent(r.file)}">${ICON_DL}</a></td></tr>`).join('');
+}
+$('#copyApk').onclick = () => { navigator.clipboard?.writeText(`${location.origin}/apk/latest.apk`); toast('✔ Link copied'); };
+
+/* =========================================================== devices */
+let devices = [];
+async function loadDevices() {
+  devices = await api('/api/devices').catch(() => devices);
+  $('#nDev').textContent = devices.length || '';
+  const total = devices.reduce((a, d) => a + (d.log_count || 0), 0);
+  $('#kLogs').textContent = total.toLocaleString();
+  $('#kLogsS').textContent = `${devices.length} device${devices.length === 1 ? '' : 's'}`;
+  const sel = $('#logDev'), keep = sel.value;
+  sel.innerHTML = '<option value="">All devices</option>' + devices.map((d) => `<option value="${esc(d.id)}">${esc(devName(d.id))}</option>`).join('');
+  sel.value = keep;
+  $('#devRows').innerHTML = devices.map((d) => {
+    const on = Date.now() - d.last_seen < 30000;
+    return `<tr><td><span class="dot ${on ? 'on' : ''}"></span></td>
+      <td><b>${esc(`${d.manufacturer || ''} ${d.model || ''}`.trim() || d.id.slice(0, 8))}</b><div class="dim mono" style="font-size:11px">${esc(d.id)}</div></td>
+      <td>${esc(d.android ?? '?')} <span class="dim">(SDK ${esc(d.sdk ?? '?')})</span></td>
+      <td class="mono">${esc(d.app_version ?? '?')} <span class="dim">(${esc(d.app_code ?? '?')})</span></td>
+      <td class="mono">${esc(d.ip || '')}</td><td class="num">${(d.log_count || 0).toLocaleString()}</td>
+      <td class="num">${date(d.first_seen)}</td><td class="num">${ago(d.last_seen)}</td>
+      <td><button class="btn sm" data-logs="${esc(d.id)}">Logs →</button></td></tr>`;
+  }).join('') || '<tr><td colspan="9" class="dim">No devices yet</td></tr>';
+}
+$('#devRows').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-logs]'); if (!b) return;
+  $('#logDev').value = b.dataset.logs; selectLogDevice(b.dataset.logs); location.hash = 'logs';
+});
+
+/* =========================================================== logs */
+const logEl = $('#log');
+const L = { device: '', levels: new Set('VDIWE'), q: '', paused: false, rows: [], maxId: 0, minId: 0, buffer: null };
+const MAX_ROWS = 5000;
+const fmtTime = (ts) => { const d = new Date(ts); return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0'); };
+function devName(id) { const d = devices.find((x) => x.id === id); return d ? (d.model || id.slice(0, 8)) : String(id).slice(0, 8); }
+function matches(r) {
+  if (L.device && r.device_id !== L.device) return false;
+  if (!L.levels.has(r.level)) return false;
+  if (L.q) { const q = L.q.toLowerCase(); if (!r.msg.toLowerCase().includes(q) && !r.tag.toLowerCase().includes(q)) return false; }
+  return true;
+}
+function rowEl(r) {
+  const div = document.createElement('div');
+  div.className = 'lr' + (L.device ? '' : ' all'); div.dataset.l = r.level;
+  const cells = [['t', fmtTime(r.ts)]];
+  if (!L.device) cells.push(['d', devName(r.device_id)]);
+  cells.push(['l', r.level], ['g', r.tag], ['m', r.msg]);
+  for (const [c, txt] of cells) { const s = document.createElement('span'); s.className = c; s.textContent = txt; if (c === 'g') s.title = txt; div.appendChild(s); }
+  return div;
+}
+function errCount() { $('#oErr').textContent = L.rows.filter((r) => r.level === 'E').length; }
+function render() {
+  logEl.textContent = '';
+  const visible = L.rows.filter(matches);
+  if (L.minId > 1) { const b = document.createElement('button'); b.className = 'btn sm'; b.style.margin = '6px 12px'; b.textContent = 'Load older'; b.onclick = loadOlder; logEl.appendChild(b); }
+  if (!visible.length) { const e = document.createElement('div'); e.className = 'empty'; e.style.margin = '12px'; e.textContent = 'No log lines yet. Open Grbl Sender on the tablet.'; logEl.appendChild(e); }
+  const frag = document.createDocumentFragment();
+  for (const r of visible) frag.appendChild(rowEl(r));
+  logEl.appendChild(frag);
+  $('#count').textContent = `${visible.length} lines`;
+  if ($('#follow').checked) logEl.scrollTop = logEl.scrollHeight;
+  errCount();
+}
+function append(rows) {
+  if (L.paused) { L.buffer = (L.buffer || []).concat(rows); $('#pause').textContent = `Resume (${L.buffer.length})`; return; }
+  L.rows.push(...rows);
+  for (const r of rows) L.maxId = Math.max(L.maxId, r.id);
+  if (L.rows.length > MAX_ROWS) { L.rows.splice(0, L.rows.length - MAX_ROWS); render(); return; }
+  logEl.querySelector('.empty')?.remove();
+  const frag = document.createDocumentFragment();
+  for (const r of rows) if (matches(r)) frag.appendChild(rowEl(r));
+  logEl.appendChild(frag);
+  if ($('#follow').checked) logEl.scrollTop = logEl.scrollHeight;
+  $('#count').textContent = `${L.rows.filter(matches).length} lines`;
+  errCount();
+}
+async function loadLogs() {
+  const qs = new URLSearchParams({ limit: 1000 });
+  if (L.device) qs.set('device', L.device);
+  L.rows = await api('/api/logs?' + qs).catch(() => []);
+  L.maxId = L.rows.reduce((m, r) => Math.max(m, r.id), L.maxId);
+  L.minId = L.rows.length ? L.rows[0].id : 0;
+  render();
+}
+async function loadOlder() {
+  const qs = new URLSearchParams({ limit: 1000, before: L.minId });
+  if (L.device) qs.set('device', L.device);
+  const older = await api('/api/logs?' + qs);
+  if (!older.length) { L.minId = 0; render(); return; }
+  L.rows = older.concat(L.rows); L.minId = older[0].id;
+  const follow = $('#follow').checked; $('#follow').checked = false; render(); $('#follow').checked = follow;
+}
+function selectLogDevice(id) { L.device = id; loadLogs(); }
+$('#logDev').onchange = (e) => selectLogDevice(e.target.value);
+$$('.lv').forEach((b) => b.onclick = () => { const l = b.dataset.l; L.levels.has(l) ? L.levels.delete(l) : L.levels.add(l); b.classList.toggle('on'); render(); });
+let qTimer;
+$('#q').oninput = (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { L.q = e.target.value; render(); }, 150); };
+$('#pause').onclick = () => {
+  L.paused = !L.paused; $('#pause').textContent = L.paused ? 'Resume' : 'Pause';
+  if (!L.paused && L.buffer) { const b = L.buffer; L.buffer = null; append(b); }
+};
+$('#clear').onclick = async () => {
+  const what = L.device ? `logs of ${devName(L.device)}` : 'ALL logs';
+  if (!confirm(`Delete ${what} from the server?`)) return;
+  await api('/api/logs' + (L.device ? '?device=' + encodeURIComponent(L.device) : ''), { method: 'DELETE' });
+  L.rows = []; L.minId = 0; render(); loadDevices();
+};
+$('#export').onclick = () => {
+  const txt = L.rows.filter(matches).map((r) => `${new Date(r.ts).toISOString()} ${devName(r.device_id)} ${r.level}/${r.tag}: ${r.msg}`).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain' }));
+  a.download = `grblsender-log-${new Date().toISOString().slice(0, 19).replace(/:/g, '')}.txt`;
+  a.click();
+};
+let liveN = 0;
+function connectStream() {
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { $('#liveDot').className = 'dot on'; $('#liveTxt').textContent = 'log stream live'; };
+  es.onerror = () => { $('#liveDot').className = 'dot warn'; $('#liveTxt').textContent = 'reconnecting…'; };
+  es.onmessage = (ev) => {
+    const rows = JSON.parse(ev.data);
+    if (rows.some((r) => !devices.find((d) => d.id === r.device_id))) loadDevices();
+    if (page !== 'logs') { liveN += rows.length; $('#nLogs').textContent = '+' + liveN; $('#nLogs').className = 'cnt live'; }
+    append(rows);
+  };
+}
+addEventListener('hashchange', () => { if (page === 'logs') { liveN = 0; $('#nLogs').textContent = ''; } });
+
+/* =========================================================== API docs */
+const EPS = [
+  ['GET', '/api/cnc', 'Tablets with their live status'],
+  ['GET', '/api/cnc/status?device=', 'One tablet (default: the last one seen)'],
+  ['GET', '/api/cnc/console?after=SEQ', 'Console lines sent (>>) and received'],
+  ['POST', '/api/cnc/command', '{"cmd":"run|hold|resume|stop|load|send|unlock|home|reset|zero|status", "file":"x.nc", "line":"G0X0", "axes":"XY", "wait":true}'],
+  ['GET', '/api/cnc/command?id=ID', 'Command state and result'],
+  ['GET', '/api/jobs?device=&limit=', 'Job log'],
+  ['GET', '/api/jobs/ID', 'One job with its events'],
+  ['POST', '/api/gcode/upload?name=x.nc', 'Raw request body is stored as an NC file'],
+  ['DELETE', '/api/gcode/NAME', 'Delete an NC file (and its preview image)'],
+];
+const EPS2 = [
+  ['GET', '/api/version', 'Latest APK release'], ['GET', '/apk/latest.apk', 'Download the latest APK'],
+  ['GET', '/api/firmware', 'Firmware catalogue, newest first'], ['GET', '/api/gcode', 'NC file list'],
+  ['GET', '/gcode/NAME', 'Download an NC file'], ['GET', '/health', 'Liveness check'],
+];
+const MC = { GET: 'b-cyan', POST: 'b-ok', DELETE: 'b-err' };
+const epHtml = (l) => l.map(([m, p, d]) => `<div class="ep"><span class="m badge ${MC[m]}">${m}</span><div><code>${esc(p)}</code><p>${esc(d)}</p></div></div>`).join('');
+$('#eps').innerHTML = epHtml(EPS); $('#eps2').innerHTML = epHtml(EPS2);
+$('#ex1').textContent = `KEY=…   # CNC_API_KEY from backoffice/.env
+
+# hold the machine and wait for the tablet's answer
+curl -H "Authorization: Bearer $KEY" \\
+     -d '{"cmd":"hold","wait":true}' \\
+     ${location.origin}/api/cnc/command
+
+# upload a file, then load it on the tablet
+curl -H "Authorization: Bearer $KEY" --data-binary @part.nc \\
+     "${location.origin}/api/gcode/upload?name=part.nc"
+curl -H "Authorization: Bearer $KEY" \\
+     -d '{"cmd":"load","file":"part.nc","wait":true}' \\
+     ${location.origin}/api/cnc/command`;
+
+/* =========================================================== boot */
+route();
+poll(); pollConsole();
+loadDevices().then(loadLogs);
+loadFiles(); loadFirmware(); loadReleases(); loadJobs();
+connectStream();
+setInterval(loadDevices, 10000);
+setInterval(() => { if (page === 'jobs' || page === 'overview') loadJobs(); }, 5000);
+</script>
+</body>
+</html>

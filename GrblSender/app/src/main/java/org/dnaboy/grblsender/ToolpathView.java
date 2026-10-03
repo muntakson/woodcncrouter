@@ -13,7 +13,9 @@ import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -272,7 +274,8 @@ public class ToolpathView extends View {
         String label = (major >= 1 ? String.format(Locale.US, "%.0f mm", major) : String.format(Locale.US, "%.1f mm", major));
         float bar = major * scale;
         if (bar < w / 2) {
-            float bx = w - bar - 16 * density, by = h - 14 * density;
+            // above the legend row so the two never overlap on a narrow panel
+            float bx = w - bar - 16 * density, by = h - 32 * density;
             c.drawLine(bx, by, bx + bar, by, cross);
             c.drawText(label, bx, by - 6 * density, textMuted);
         }
@@ -299,34 +302,65 @@ public class ToolpathView extends View {
     private void drawInfo(Canvas c) {
         float pad = 10 * density;
         float iconW = 22 * density, iconH = 56 * density;
-        float boxH = iconH + 2 * pad;
-        float boxW = Math.min(getWidth() - 2 * pad, 330 * density);
-        c.drawRoundRect(new RectF(pad, pad, pad + boxW, pad + boxH), 8 * density, 8 * density, panel);
-        drawEndMill(c, pad * 2, pad * 2, iconW, iconH);
+        // keep clear of the Fit / full-screen buttons in the top-right corner
+        float boxW = Math.max(150 * density, Math.min(getWidth() - 2 * pad - 118 * density, 360 * density));
+        float tx = pad * 2 + iconW + 12 * density;
+        float maxW = pad + boxW - tx - 8 * density;
 
-        float tx = pad * 2 + iconW + 12 * density, ty = pad * 2 + 13 * density;
+        // fields flow onto as many lines as the box width needs
+        List<String> fields = new ArrayList<>();
+        List<Paint> paints = new ArrayList<>();
         float d = path != null ? path.toolDiameter : GCodeParser.DEFAULT_TOOL_DIAMETER;
         boolean fromFile = path != null && path.toolFromFile;
-        c.drawText(String.format(Locale.US, "Tool Ø %.3f mm%s", d, fromFile ? "" : "  (default)"), tx, ty, text);
-        ty += 17 * density;
+        fields.add(String.format(Locale.US, "Tool Ø %.3f mm%s", d, fromFile ? "" : " (default)"));
+        paints.add(text);
         if (path != null && path.hasBounds()) {
-            c.drawText(String.format(Locale.US, "Size %.1f × %.1f mm   Z %.2f…%.2f",
-                    path.maxX - path.minX, path.maxY - path.minY,
-                    path.minZ == Float.MAX_VALUE ? 0 : path.minZ, path.maxZ == -Float.MAX_VALUE ? 0 : path.maxZ), tx, ty, textMuted);
-            ty += 15 * density;
             long sec = Math.round(path.estSeconds);
             String est = sec >= 3600 ? String.format(Locale.US, "%dh %02dm", sec / 3600, (sec % 3600) / 60)
                     : String.format(Locale.US, "%d:%02d", sec / 60, sec % 60);
-            c.drawText(String.format(Locale.US, "Est. time %s%s   cut %.1f m   %d lines", est,
-                    path.feedCapped ? String.format(Locale.US, " (F capped %.0f)", path.cappedRate) : "",
-                    path.feedLengthMm / 1000, path.lines.size()), tx, ty, text);
+            fields.add(String.format(Locale.US, "Est. %s%s", est,
+                    path.feedCapped ? String.format(Locale.US, " (F capped %.0f)", path.cappedRate) : ""));
+            paints.add(text);
+            fields.add(String.format(Locale.US, "%.1f × %.1f mm", path.maxX - path.minX, path.maxY - path.minY));
+            paints.add(textMuted);
+            fields.add(String.format(Locale.US, "Z %.2f…%.2f",
+                    path.minZ == Float.MAX_VALUE ? 0 : path.minZ, path.maxZ == -Float.MAX_VALUE ? 0 : path.maxZ));
+            paints.add(textMuted);
+            fields.add(String.format(Locale.US, "cut %.1f m", path.feedLengthMm / 1000));
+            paints.add(textMuted);
+            fields.add(String.format(Locale.US, "%d lines", path.lines.size()));
+            paints.add(textMuted);
         } else {
-            c.drawText(path == null ? "No program" : "No XY motion", tx, ty, textMuted);
+            fields.add(path == null ? "No program" : "No XY motion");
+            paints.add(textMuted);
         }
-        ty += 15 * density;
         if (toolKnown) {
-            c.drawText(String.format(Locale.US, "Tool at X %.3f  Y %.3f  Z %.3f", toolX, toolY, toolZ), tx, ty, textMuted);
+            fields.add(String.format(Locale.US, "Tool at X %.2f Y %.2f Z %.2f", toolX, toolY, toolZ));
+            paints.add(textMuted);
         }
+        float gap = 12 * density, lineH = 16 * density;
+        float[] fx = new float[fields.size()];
+        int[] fl = new int[fields.size()];
+        float x = 0;
+        int line = 0;
+        for (int i = 0; i < fields.size(); i++) {
+            float fw = paints.get(i).measureText(fields.get(i));
+            // the tool line and the "tool at" line always start a new line
+            boolean forceBreak = i == 1 || (toolKnown && i == fields.size() - 1);
+            if (x > 0 && (forceBreak || x + fw > maxW)) { line++; x = 0; }
+            fx[i] = x;
+            fl[i] = line;
+            x += fw + gap;
+        }
+        float boxH = Math.max(iconH, (line + 1) * lineH + 4 * density) + 2 * pad;
+        c.drawRoundRect(new RectF(pad, pad, pad + boxW, pad + boxH), 8 * density, 8 * density, panel);
+        drawEndMill(c, pad * 2, pad * 2, iconW, iconH);
+        c.save();
+        c.clipRect(tx, pad, pad + boxW - 6 * density, pad + boxH);
+        float ty0 = pad * 2 + 12 * density;
+        for (int i = 0; i < fields.size(); i++) c.drawText(fields.get(i), tx + fx[i], ty0 + fl[i] * lineH, paints.get(i));
+        c.restore();
+
         // legend
         float ly = getHeight() - 14 * density, lx = pad;
         lx = legend(c, lx, ly, feedPaint.getColor(), "feed");

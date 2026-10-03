@@ -23,6 +23,8 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const GCODE_DIR = path.join(__dirname, 'gcode');
 const FIRMWARE_DIR = path.join(__dirname, 'firmware');
 const MAX_LOG_ROWS = 200000;
+// Bearer token for the remote-control HTTP API (scripts, other servers); the dashboard login works too
+const CNC_API_KEY = process.env.CNC_API_KEY || '';
 
 // ---------------------------------------------------------------- db
 const db = new DatabaseSync(path.join(__dirname, 'data', 'logs.db'));
@@ -37,6 +39,15 @@ db.exec(`
     level TEXT, tag TEXT, msg TEXT
   );
   CREATE INDEX IF NOT EXISTS logs_device ON logs(device_id, id);
+  CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY, device_id TEXT, file TEXT, lines INTEGER, est_sec INTEGER, source TEXT,
+    started INTEGER, ended INTEGER, result TEXT, last_line INTEGER, errors INTEGER, paused_ms INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS jobs_device ON jobs(device_id, started);
+  CREATE TABLE IF NOT EXISTS job_events (
+    uid TEXT PRIMARY KEY, job_id TEXT, device_id TEXT, ts INTEGER, event TEXT, line INTEGER, detail TEXT
+  );
+  CREATE INDEX IF NOT EXISTS job_events_job ON job_events(job_id, ts);
 `);
 const upsertDevice = db.prepare(`
   INSERT INTO devices (id, model, manufacturer, android, sdk, app_version, app_code, ip, first_seen, last_seen)
@@ -118,6 +129,91 @@ function clientIp(req) {
   return (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].replace('::ffff:', '');
 }
 
+// ---------------------------------------------------------------- remote control (tablet <-> backoffice)
+// The tablet keeps a sync loop running: POST /api/device/sync carries its live status, new console
+// lines, command results and job-log events, and the reply carries the commands queued for it
+// (long-poll: the server holds the request until a command arrives or `wait` ms pass).
+const ONLINE_MS = 10000;
+const COMMAND_TTL_MS = 30000;        // a queued command not picked up by then is dropped (never run stale)
+const CONSOLE_MAX = 1000;
+const CONTROL_CMDS = new Set(['run', 'resume', 'load', 'send', 'unlock', 'home', 'reset', 'zero']);
+const ALL_CMDS = new Set([...CONTROL_CMDS, 'hold', 'stop', 'status']);
+const cnc = new Map();               // device id -> { status, seen, console: [], seq, queue: [], waiter }
+const commands = new Map();          // command id -> command record (kept 1 h)
+
+function cncDevice(id) {
+  let d = cnc.get(id);
+  if (!d) { d = { status: null, seen: 0, console: [], seq: 0, queue: [], waiter: null }; cnc.set(id, d); }
+  return d;
+}
+
+function publicCommand(c) {
+  const { id, device, cmd, args, state, created, sent, done, ok, result } = c;
+  return { id, device, cmd, args, state, created, sent, done, ok, result };
+}
+
+function wakeDevice(d) {
+  if (d.waiter) { const w = d.waiter; d.waiter = null; w(); }
+}
+
+function takeCommands(d) {
+  const now = Date.now(), out = [];
+  for (const c of d.queue.splice(0)) {
+    if (now - c.created > COMMAND_TTL_MS) { c.state = 'expired'; c.done = now; c.result = 'not picked up by the tablet in time'; continue; }
+    c.state = 'sent'; c.sent = now;
+    out.push({ id: c.id, cmd: c.cmd, ...c.args, age: now - c.created });
+  }
+  return out;
+}
+
+const upsertJob = db.prepare(`
+  INSERT INTO jobs (id, device_id, file, lines, est_sec, source, started, ended, result, last_line, errors, paused_ms)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    file = COALESCE(excluded.file, file), lines = COALESCE(excluded.lines, lines),
+    est_sec = COALESCE(excluded.est_sec, est_sec), source = COALESCE(excluded.source, source),
+    started = COALESCE(excluded.started, started), ended = COALESCE(excluded.ended, ended),
+    result = COALESCE(excluded.result, result), last_line = COALESCE(excluded.last_line, last_line),
+    errors = COALESCE(excluded.errors, errors), paused_ms = COALESCE(excluded.paused_ms, paused_ms)`);
+const insertJobEvent = db.prepare(
+  'INSERT OR IGNORE INTO job_events (uid, job_id, device_id, ts, event, line, detail) VALUES (?, ?, ?, ?, ?, ?, ?)');
+
+function storeJobEvent(deviceId, e) {
+  if (!e || !e.uid || !e.job) return;
+  const j = e.job, ts = Number(e.ts) || Date.now();
+  const n = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+  upsertJob.run(String(j.id), deviceId, j.file ?? null, n(j.lines), n(j.estSec), j.source ?? null,
+    e.event === 'started' ? ts : null, e.event === 'ended' ? ts : null,
+    e.event === 'ended' ? String(e.result || 'ended') : null, n(e.line), n(e.errors), n(e.pausedMs));
+  insertJobEvent.run(String(e.uid), String(j.id), deviceId, ts, String(e.event).slice(0, 20), n(e.line),
+    e.detail ? String(e.detail).slice(0, 500) : null);
+}
+
+/** Which tablet a remote call means: ?device=…, else the one that synced last. */
+function pickDevice(id) {
+  if (id) return cnc.has(id) ? id : null;
+  let best = null, seen = 0;
+  for (const [k, d] of cnc) if (d.seen > seen) { best = k; seen = d.seen; }
+  return best;
+}
+
+function cncSummary(id) {
+  const d = cnc.get(id);
+  const dev = db.prepare('SELECT model, manufacturer, app_version FROM devices WHERE id = ?').get(id) || {};
+  return { device: id, model: [dev.manufacturer, dev.model].filter(Boolean).join(' '), app: dev.app_version,
+    online: Date.now() - d.seen < ONLINE_MS, lastSeen: d.seen, status: d.status };
+}
+
+function hasApiKey(req) {
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  return !!(CNC_API_KEY && m && safeEqual(m[1].trim(), CNC_API_KEY));
+}
+
+setInterval(() => {
+  const old = Date.now() - 3600 * 1000;
+  for (const [k, c] of commands) if (c.created < old) commands.delete(k);
+}, 600 * 1000);
+
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 
 function serveFile(res, file, extraHeaders = {}) {
@@ -163,6 +259,143 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, stored: rows.length, latestVersionCode: latest?.versionCode ?? 0 });
   }
 
+  // ---- tablet sync loop (ingest key): status up, commands down
+  if (req.method === 'POST' && p === '/api/device/sync') {
+    if (!safeEqual(req.headers['x-ingest-key'] || '', INGEST_KEY)) return send(res, 401, { error: 'bad key' });
+    let data;
+    try { data = JSON.parse((await readBody(req)).toString('utf8')); } catch { return send(res, 400, { error: 'bad json' }); }
+    const id = String(data.device?.id || '');
+    if (!id) return send(res, 400, { error: 'device.id required' });
+    const d = cncDevice(id);
+    const now = Date.now();
+    d.seen = now;
+    if (data.status) d.status = { ...data.status, at: now };
+    for (const l of (Array.isArray(data.console) ? data.console : []).slice(0, 500)) {
+      d.console.push({ seq: ++d.seq, ts: Number(l.ts) || now, src: String(l.src || ''), text: String(l.text ?? '').slice(0, 2000) });
+    }
+    if (d.console.length > CONSOLE_MAX) d.console.splice(0, d.console.length - CONSOLE_MAX);
+    for (const r of Array.isArray(data.results) ? data.results : []) {
+      const c = commands.get(String(r.id));
+      if (c && c.device === id) {
+        c.state = r.ok ? 'done' : 'failed'; c.ok = !!r.ok; c.result = String(r.msg ?? '').slice(0, 2000); c.done = now;
+        for (const w of c.waiters.splice(0)) w();
+      }
+    }
+    let stored = 0;
+    for (const e of Array.isArray(data.jobEvents) ? data.jobEvents.slice(0, 200) : []) { storeJobEvent(id, e); stored++; }
+    let cmds = takeCommands(d);
+    const wait = Math.min(Math.max(Number(data.wait) || 0, 0), 20000);
+    if (!cmds.length && wait > 0) {
+      let me;
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, wait);
+        me = () => { clearTimeout(t); resolve(); };
+        if (d.waiter) d.waiter();            // an older request from the same tablet: let it return
+        d.waiter = me;
+        res.on('close', me);                 // the tablet hung up
+      });
+      if (d.waiter === me) d.waiter = null;
+      cmds = takeCommands(d);
+    }
+    if (res.destroyed) {                      // the tablet gave up: put the commands back
+      for (const c of cmds) { const rec = commands.get(c.id); if (rec) { rec.state = 'queued'; d.queue.push(rec); } }
+      return;
+    }
+    return send(res, 200, { ok: true, commands: cmds, jobEventsStored: stored, serverTime: Date.now() });
+  }
+
+  // ---- remote-control API: dashboard login (LAN / Basic) or "Authorization: Bearer CNC_API_KEY"
+  if (p.startsWith('/api/cnc') || (p === '/api/jobs' || p.startsWith('/api/jobs/')) || p === '/api/gcode/upload'
+      || (req.method === 'DELETE' && p.startsWith('/api/gcode/')) || p === '/cnc') {
+    if (!isAdmin(req) && !hasApiKey(req)) {
+      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Grbl Sender backoffice", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('sign in required (dashboard login or Authorization: Bearer <CNC_API_KEY>)');
+    }
+    if (isGet && p === '/cnc') { res.writeHead(302, { Location: '/app#remote' }); return res.end(); }
+
+    if (isGet && p === '/api/cnc') {
+      return send(res, 200, [...cnc.keys()].map(cncSummary).sort((a, b) => b.lastSeen - a.lastSeen));
+    }
+    if (isGet && p === '/api/cnc/status') {
+      const id = pickDevice(url.searchParams.get('device'));
+      if (!id) return send(res, 404, { error: 'no tablet has connected yet' });
+      return send(res, 200, cncSummary(id));
+    }
+    if (isGet && p === '/api/cnc/console') {
+      const id = pickDevice(url.searchParams.get('device'));
+      if (!id) return send(res, 404, { error: 'no tablet has connected yet' });
+      const after = Number(url.searchParams.get('after') || 0);
+      const limit = Math.min(Number(url.searchParams.get('limit') || 300), CONSOLE_MAX);
+      return send(res, 200, { device: id, lines: cnc.get(id).console.filter((l) => l.seq > after).slice(-limit) });
+    }
+    if (isGet && p === '/api/cnc/command') {
+      const c = commands.get(url.searchParams.get('id') || '');
+      return c ? send(res, 200, publicCommand(c)) : send(res, 404, { error: 'unknown command id' });
+    }
+    if (req.method === 'POST' && p === '/api/cnc/command') {
+      let body;
+      try { body = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8') || '{}'); } catch { return send(res, 400, { error: 'bad json' }); }
+      const cmd = String(body.cmd || '').toLowerCase();
+      if (!ALL_CMDS.has(cmd)) return send(res, 400, { error: `cmd must be one of ${[...ALL_CMDS].join(', ')}` });
+      const id = pickDevice(body.device);
+      if (!id) return send(res, 404, { error: 'no tablet has connected yet' });
+      const d = cnc.get(id);
+      if (Date.now() - d.seen > ONLINE_MS) return send(res, 409, { error: 'the tablet is offline' });
+      if (CONTROL_CMDS.has(cmd) && d.status && d.status.remoteControl === false) {
+        return send(res, 403, { error: 'remote control is switched off on the tablet (Settings → General)' });
+      }
+      const args = {};
+      if (body.file !== undefined) args.file = String(body.file);
+      if (body.line !== undefined) args.line = String(body.line).slice(0, 200);
+      if (body.axes !== undefined) args.axes = String(body.axes);
+      const c = { id: crypto.randomUUID(), device: id, cmd, args, state: 'queued', created: Date.now(), waiters: [] };
+      commands.set(c.id, c);
+      d.queue.push(c);
+      wakeDevice(d);
+      if (body.wait) {
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, 15000);
+          c.waiters.push(() => { clearTimeout(t); resolve(); });
+        });
+      }
+      return send(res, 202, publicCommand(c));
+    }
+    if (isGet && p === '/api/jobs') {
+      const device = url.searchParams.get('device');
+      const limit = Math.min(Number(url.searchParams.get('limit') || 50), 500);
+      const rows = device
+        ? db.prepare('SELECT * FROM jobs WHERE device_id = ? ORDER BY started DESC LIMIT ?').all(device, limit)
+        : db.prepare('SELECT * FROM jobs ORDER BY started DESC LIMIT ?').all(limit);
+      return send(res, 200, rows);
+    }
+    if (isGet && p.startsWith('/api/jobs/')) {
+      const jid = decodeURIComponent(p.slice('/api/jobs/'.length));
+      const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jid);
+      if (!job) return send(res, 404, { error: 'unknown job' });
+      job.events = db.prepare('SELECT ts, event, line, detail FROM job_events WHERE job_id = ? ORDER BY ts, uid').all(jid);
+      return send(res, 200, job);
+    }
+    if (req.method === 'POST' && p === '/api/gcode/upload') {
+      const name = path.basename(url.searchParams.get('name') || '');
+      if (!/^[\w.\- ()]+\.(nc|gcode|ngc|tap)$/i.test(name)) return send(res, 400, { error: 'name must end in .nc, .gcode, .ngc or .tap' });
+      const body = await readBody(req, 50 * 1024 * 1024);
+      fs.mkdirSync(GCODE_DIR, { recursive: true });
+      fs.writeFileSync(path.join(GCODE_DIR, name), body);
+      return send(res, 200, { ok: true, name, size: body.length });
+    }
+    if (req.method === 'DELETE' && p.startsWith('/api/gcode/')) {
+      const name = path.basename(decodeURIComponent(p.slice('/api/gcode/'.length)));
+      if (!/^[\w.\- ()]+\.(nc|gcode|ngc|tap)$/i.test(name)) return send(res, 400, { error: 'not a G-code file' });
+      const file = path.join(GCODE_DIR, name);
+      if (!fs.existsSync(file)) return send(res, 404, { error: 'no such file' });
+      fs.unlinkSync(file);
+      const png = path.join(GCODE_DIR, name.replace(/\.[^.]+$/, '') + '_preview.png');
+      if (fs.existsSync(png)) fs.unlinkSync(png);
+      return send(res, 200, { ok: true, deleted: name });
+    }
+    return send(res, 404, { error: 'not found' });
+  }
+
   if (isGet && p === '/api/version') {
     const latest = listReleases()[0];
     if (!latest) return send(res, 200, { versionCode: 0 });
@@ -187,6 +420,10 @@ async function handle(req, res) {
   }
 
   if (p === '/health') return send(res, 200, { ok: true });
+
+  // Public landing page; the console itself is at /app (sign-in below)
+  if (isGet && (p === '/' || p === '/index.html')) return serveFile(res, path.join(PUBLIC_DIR, 'index.html'));
+  if (isGet && p === '/favicon.svg') return serveFile(res, path.join(PUBLIC_DIR, 'favicon.svg'));
 
   // G-code files for the tablet (download in the browser, then Open in Grbl Sender)
   // Arduino firmware catalogue (newest first) and downloads, for the app's firmware updater
@@ -239,7 +476,7 @@ async function handle(req, res) {
     return res.end('sign in required');
   }
 
-  if (req.method === 'GET' && (p === '/' || p === '/index.html')) return serveFile(res, path.join(PUBLIC_DIR, 'index.html'));
+  if (req.method === 'GET' && (p === '/app' || p === '/app/')) return serveFile(res, path.join(PUBLIC_DIR, 'app.html'));
 
   if (req.method === 'GET' && p === '/api/devices') {
     return send(res, 200, db.prepare(`

@@ -36,6 +36,28 @@ public final class RemoteLog {
     private static File crashFile;
     private static volatile UpdateListener updateListener;
     private static volatile boolean updateNotified;
+    private static volatile String server = BuildConfig.LOG_SERVER;
+    private static volatile boolean uploadFailing;
+
+    /** Backoffice base URL (Settings → General), e.g. https://cnc.iotok.org. */
+    static String server() { return server; }
+
+    /** Accepts "host", "host:port" or a full URL; returns the normalised URL that is now in use. */
+    static String setServer(String url) {
+        server = normalize(url);
+        return server;
+    }
+
+    static String normalize(String url) {
+        String u = url == null ? "" : url.trim();
+        if (u.isEmpty()) u = BuildConfig.LOG_SERVER;
+        if (!u.matches("(?i)^https?://.*")) u = "https://" + u;
+        while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
+        return u;
+    }
+
+    /** This tablet's identity as sent with every upload (id = ANDROID_ID). */
+    static JSONObject device() { return device; }
 
     private RemoteLog() { }
 
@@ -128,12 +150,17 @@ public final class RemoteLog {
                 synchronized (queue) {
                     for (int i = 0; i < batch.length() && !queue.isEmpty(); i++) queue.poll();
                 }
+                if (uploadFailing) DebugLog.srv("Log upload works again (" + server + ")");
+                uploadFailing = false;
+                DebugLog.srvVerbose("uploaded " + batch.length() + " log line(s)");
                 int latest = resp.optInt("latestVersionCode", 0);
                 if (latest > BuildConfig.VERSION_CODE && !updateNotified) checkVersion();
                 backoffMs = 1000;
                 Thread.sleep(500);   // coalesce bursts into fewer requests
             } catch (Exception e) {
                 Log.w(TAG, "log upload failed: " + e);
+                if (!uploadFailing) DebugLog.srvErr("Log upload to " + server + " failed: " + e.getMessage() + " – keeping lines and retrying");
+                uploadFailing = true;
                 try { Thread.sleep(backoffMs); } catch (InterruptedException ie) { return; }
                 backoffMs = Math.min(backoffMs * 2, 30000);
             }
@@ -144,6 +171,7 @@ public final class RemoteLog {
         try {
             JSONObject v = new JSONObject(get("/api/version"));
             int code = v.optInt("versionCode", 0);
+            DebugLog.srv("Version check: newest on the backoffice is build " + code + " (installed " + BuildConfig.VERSION_CODE + ")");
             UpdateListener l = updateListener;
             if (code > BuildConfig.VERSION_CODE && l != null && !updateNotified) {
                 updateNotified = true;
@@ -151,15 +179,19 @@ public final class RemoteLog {
             }
         } catch (Exception e) {
             Log.w(TAG, "version check failed: " + e);
+            DebugLog.srvErr("Version check failed: " + e.getMessage());
         }
     }
 
-    public static String downloadUrl() { return BuildConfig.LOG_SERVER + "/apk/latest.apk"; }
+    public static String downloadUrl() { return server + "/apk/latest.apk"; }
 
-    private static String post(String path, String json) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(BuildConfig.LOG_SERVER + path).openConnection();
+    private static String post(String path, String json) throws Exception { return postJson(path, json, 10000); }
+
+    /** POST JSON with the ingest key (call off the UI thread). */
+    static String postJson(String path, String json, int readTimeoutMs) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(server + path).openConnection();
         c.setConnectTimeout(5000);
-        c.setReadTimeout(10000);
+        c.setReadTimeout(readTimeoutMs);
         c.setRequestMethod("POST");
         c.setDoOutput(true);
         c.setRequestProperty("Content-Type", "application/json");
@@ -171,8 +203,11 @@ public final class RemoteLog {
     }
 
     /** GET {@code path} on the backoffice server (call off the UI thread). */
-    static String get(String path) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(BuildConfig.LOG_SERVER + path).openConnection();
+    static String get(String path) throws Exception { return getAbs(server + path); }
+
+    /** GET a full URL (used to test another server before switching to it). */
+    static String getAbs(String url) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(5000);
         c.setReadTimeout(10000);
         return readResponse(c);
@@ -180,7 +215,7 @@ public final class RemoteLog {
 
     /** GET {@code path} as raw bytes (binary firmware images). Call off the UI thread. */
     static byte[] getBytes(String path) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(BuildConfig.LOG_SERVER + path).openConnection();
+        HttpURLConnection c = (HttpURLConnection) new URL(server + path).openConnection();
         c.setConnectTimeout(5000);
         c.setReadTimeout(20000);
         try {

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hexagon (the dome panels) with a toolpath and the spindle -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#00E5FF" android:strokeWidth="4" android:strokeLineJoin="round"
+        android:pathData="M54,26 L78,40 L78,68 L54,82 L30,68 L30,40 Z" />
+    <path android:strokeColor="#3DDC84" android:strokeWidth="3" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M40,62 L40,46 L54,38 L68,46 L68,62" />
+    <path android:fillColor="#FFFFFF" android:pathData="M64,62 L72,62 L72,66 L64,66 Z" />
+    <path android:fillColor="#00E5FF" android:pathData="M66,66 L70,66 L68,71 Z" />
+</vector>
