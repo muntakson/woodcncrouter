@@ -42,6 +42,7 @@ final class RemoteControl {
     private volatile long lastOkMs;
     private volatile int gen;               // bumped by stop(): an older loop still blocked in HTTP then exits
     private long consoleSeq;
+    private volatile CameraStreamer camera;
 
     RemoteControl(Host host, JobLog jobs) {
         this.host = host;
@@ -49,6 +50,7 @@ final class RemoteControl {
     }
 
     void setStatus(JSONObject s) { status = s; }
+    void setCamera(CameraStreamer c) { camera = c; }
     void setStateListener(StateListener l) { stateListener = l; }
     boolean isOnline() { return online; }
     String lastError() { return lastError; }
@@ -101,6 +103,7 @@ final class RemoteControl {
                         .put("console", console)
                         .put("results", new JSONArray(sentResults))
                         .put("jobEvents", events)
+                        .put("camera", camera != null ? camera.statusJson() : null)
                         .put("wait", sentResults.isEmpty() ? WAIT_MS : 0);
                 JSONObject resp = new JSONObject(RemoteLog.postJson("/api/device/sync", body.toString(), WAIT_MS + 20000));
                 if (!lines.isEmpty()) consoleSeq = lines.get(lines.size() - 1).seq;
@@ -113,6 +116,8 @@ final class RemoteControl {
                 backoffMs = 2000;
                 DebugLog.srvVerbose("sync OK in " + (lastOkMs - t0) + " ms");
                 if (g != gen) break;
+                CameraStreamer cs = camera;
+                if (cs != null) cs.onRemoteWish(resp.optJSONObject("camera"));
                 JSONArray cmds = resp.optJSONArray("commands");
                 for (int i = 0; cmds != null && i < cmds.length(); i++) dispatch(cmds.getJSONObject(i));
             } catch (Exception e) {

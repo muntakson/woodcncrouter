@@ -194,7 +194,33 @@
   #toast.show { transform: none; opacity: 1; }
   #toast.bad { border-left-color: var(--err); }
 
-  @media (max-width: 1100px) { .g-side, .g2 { grid-template-columns: 1fr; } .g3 { grid-template-columns: 1fr 1fr; } }
+  /* ---------- camera ---------- */
+  .g-cam { grid-template-columns: minmax(0, 1fr) 330px; align-items: start; }
+  .cam { position: relative; background: #000; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; aspect-ratio: 16 / 9; display: grid; place-items: center; }
+  .cam img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .cam .msg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--muted); font-size: 14px; }
+  .cam .msg b { display: block; color: var(--text); font-size: 16px; margin-bottom: 6px; }
+  .cam .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--line2); border-top-color: var(--cyan); animation: spin 1s linear infinite; margin: 0 auto 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hud { position: absolute; left: 0; right: 0; pointer-events: none; display: flex; gap: 10px; align-items: center; padding: 12px 14px; font: 600 12.5px var(--mono); }
+  .hud.top { top: 0; background: linear-gradient(rgba(0, 0, 0, .65), transparent); }
+  .hud.bot { bottom: 0; background: linear-gradient(transparent, rgba(0, 0, 0, .75)); flex-wrap: wrap; }
+  .hud .live { background: var(--err); color: #fff; padding: 2px 8px; border-radius: 5px; letter-spacing: .08em; }
+  .hud .live.off { background: #334155; }
+  .hud .xyz span { color: var(--dim); margin: 0 3px 0 10px; } .hud .xyz span:first-child { margin-left: 0; }
+  .hud .bar { flex-basis: 100%; height: 4px; margin: 2px 0 0; }
+  .cam:fullscreen { border-radius: 0; border: 0; aspect-ratio: auto; width: 100vw; height: 100vh; }
+  .cam:fullscreen .hud { font-size: 15px; }
+  .cam .fsx { position: absolute; right: 12px; bottom: 12px; pointer-events: auto; display: none; gap: 8px; }
+  .cam:fullscreen .fsx { display: flex; }
+  .seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 9px; overflow: hidden; }
+  .seg button { background: transparent; border: 0; padding: 7px 12px; color: var(--muted); font: 600 12.5px var(--mono); cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line2); }
+  .seg button.on { background: rgba(34, 211, 238, .14); color: var(--cyan); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stats div { font: 12px var(--mono); color: var(--dim); }
+  .stats b { display: block; color: var(--text); font-size: 15px; font-weight: 600; }
+  @media (max-width: 1100px) { .g-side, .g2, .g-cam { grid-template-columns: 1fr; } .g3 { grid-template-columns: 1fr 1fr; } }
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; }
     aside.side { position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 40; transform: translateX(-100%); transition: transform .25s; }
@@ -225,6 +251,7 @@
       <a class="nav" href="#apk" data-page="apk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>APK files<span class="cnt" id="nApk"></span></a>
       <div class="grp">Operate</div>
       <a class="nav" href="#remote" data-page="remote"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a14 14 0 0 1 20 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/></svg>Remote control<span class="cnt" id="nRemote"></span></a>
+      <a class="nav" href="#camera" data-page="camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="12.5" rx="2.5"/><path d="M8 7l1.5-2.5h5L16 7"/><circle cx="12" cy="13.2" r="3.6"/></svg>Camera<span class="cnt" id="nCam"></span></a>
       <a class="nav" href="#jobs" data-page="jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Job log</a>
       <div class="grp">Diagnostics</div>
       <a class="nav" href="#logs" data-page="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h13"/></svg>Logs<span class="cnt" id="nLogs"></span></a>
@@ -377,6 +404,66 @@
         </div>
       </section>
 
+      <!-- CAMERA -->
+      <section class="page" data-page="camera" hidden>
+        <div class="grid g-cam">
+          <div class="grid" style="align-content:start">
+            <div class="cam" id="cam">
+              <img id="camImg" alt="Live camera view of the CNC router" hidden>
+              <div class="msg" id="camMsg"><div><div class="spin"></div><b>Connecting to the tablet camera…</b>The tablet starts its camera when someone watches.</div></div>
+              <div class="hud top" id="hudTop"><span class="live off" id="camLive">IDLE</span><span id="camTime"></span><span class="spacer" style="flex:1"></span><span id="camRes" class="dim"></span></div>
+              <div class="hud bot" id="hudBot">
+                <span class="mpill" id="cState">—</span>
+                <span class="xyz"><span>X</span><b data-ax="0">—</b><span>Y</span><b data-ax="1">—</b><span>Z</span><b data-ax="2">—</b></span>
+                <span class="dim" data-job style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">No job</span>
+                <div class="bar"><div data-prog></div></div>
+              </div>
+              <div class="fsx"><button class="btn c-hold" data-cmd="hold">❚❚ Hold</button><button class="btn c-stop" data-cmd="stop">■ Stop</button><button class="btn" id="camExit">Exit full screen</button></div>
+            </div>
+          </div>
+          <div class="grid" style="align-content:start">
+            <div class="card">
+              <h2>Machine</h2>
+              <div class="ctl" style="grid-template-columns:1fr 1fr 1fr">
+                <button class="btn c-hold" data-cmd="hold">❚❚ Hold</button>
+                <button class="btn" data-cmd="resume">⏵ Resume</button>
+                <button class="btn c-stop" data-cmd="stop">■ Stop</button>
+              </div>
+              <div class="dim" style="font-size:12px;margin-top:10px">Full controls are on <a href="#remote">Remote control</a>.</div>
+            </div>
+            <div class="card">
+              <h2>Stream</h2>
+              <div class="row" style="justify-content:space-between"><span class="muted">Size</span>
+                <span class="seg" id="camSize"><button data-v="360p">360p</button><button data-v="540p">540p</button><button data-v="720p">720p</button></span></div>
+              <div class="row" style="justify-content:space-between;margin-top:10px"><span class="muted">Frames / s</span>
+                <span class="seg" id="camFps"><button data-v="2">2</button><button data-v="5">5</button><button data-v="10">10</button></span></div>
+              <div class="row" style="justify-content:space-between;margin-top:10px"><span class="muted">Overlay</span>
+                <span class="seg" id="camHud"><button data-v="1">On</button><button data-v="0">Off</button></span></div>
+              <div class="row" style="margin-top:14px">
+                <button class="btn grow" id="camPause">❚❚ Pause</button>
+                <button class="btn grow" id="camFull">⛶ Full screen</button>
+                <a class="btn grow" id="camSnap" href="#" download>⤓ Snapshot</a>
+              </div>
+            </div>
+            <div class="card">
+              <h2>Status</h2>
+              <div class="stats">
+                <div>Received<b id="csFps">—</b></div>
+                <div>Delay<b id="csAge">—</b></div>
+                <div>Picture<b id="csRes">—</b></div>
+                <div>Frame size<b id="csKb">—</b></div>
+              </div>
+              <div class="muted" style="font-size:12.5px;margin-top:12px" id="csTab">—</div>
+            </div>
+            <div class="card">
+              <h2>MJPEG link<span class="spacer"></span><button class="btn sm" data-copy="#camUrl">Copy</button></h2>
+              <pre class="code" id="camUrl" style="white-space:pre-wrap;word-break:break-all"></pre>
+              <div class="dim" style="font-size:12px;margin-top:8px">For VLC, OBS or an &lt;img&gt;. Outside the LAN add the dashboard login or <code>Authorization: Bearer CNC_API_KEY</code>.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- JOBS -->
       <section class="page" data-page="jobs" hidden>
         <div class="kpis">
@@ -467,7 +554,7 @@ async function api(path, opts) {
 
 /* =========================================================== router */
 const TITLES = { overview: 'Overview', files: 'NC files', firmware: 'Firmware files', apk: 'APK files', remote: 'Remote control',
-  jobs: 'Job log', logs: 'Logs', devices: 'Devices', api: 'HTTP API' };
+  jobs: 'Job log', logs: 'Logs', devices: 'Devices', api: 'HTTP API', camera: 'Camera' };
 let page = 'overview';
 function route() {
   page = (location.hash.slice(1) || 'overview');
@@ -479,6 +566,7 @@ function route() {
   document.body.classList.remove('nav-open');
   $('#content').scrollTop = 0;
   ({ overview: loadJobs, files: loadFiles, firmware: loadFirmware, apk: loadReleases, jobs: loadJobs, devices: loadDevices, logs: () => render() }[page] || (() => {}))();
+  if (page === 'camera') camStart(); else if (camRunning) camStop();
   if (page === 'logs' || page === 'remote') { const el = page === 'logs' ? $('#log') : $('#rConsole'); el.scrollTop = el.scrollHeight; }
 }
 addEventListener('hashchange', route);
@@ -500,7 +588,7 @@ function renderStatus(d) {
   $('#onDot').className = 'dot' + (d?.online ? ' on' : '');
   const st = !d ? 'NO TABLET' : !d.online ? 'OFFLINE' : s.connected ? (s.machine || 'Connected') : 'USB OFF';
   const col = d?.online && s.connected ? colorOf(s.machine) : 'var(--dim)';
-  for (const id of ['#topState', '#oState', '#rState']) { const el = $(id); el.textContent = st + (s.streaming ? ' ▶' : ''); el.style.color = col; }
+  for (const id of ['#topState', '#oState', '#rState', '#cState']) { const el = $(id); el.textContent = st + (s.streaming ? ' ▶' : ''); el.style.color = col; }
   const usb = [s.boardName, s.usb, s.fw && `Grbl ${s.fw}`].filter(Boolean).join(' · ');
   $('#oUsb').textContent = usb; $('#rUsb').textContent = usb;
   const w = s.wpos || [];
@@ -573,6 +661,140 @@ async function pollConsole() {
   } catch { /* shown by poll() */ }
   setTimeout(pollConsole, page === 'remote' ? 1000 : 4000);
 }
+
+/* =========================================================== camera */
+// Frames come one per request (long-poll on /api/cnc/camera/frame), which works through every proxy;
+// while this page is open the backoffice tells the tablet to keep its camera on.
+const camViewer = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
+const camPref = (k, d) => { try { return localStorage.getItem('cam.' + k) || d; } catch { return d; } };
+const camSave = (k, v) => { try { localStorage.setItem('cam.' + k, v); } catch { /* private mode */ } };
+let camSize = camPref('size', '540p'), camFpsV = camPref('fps', '5'), camHudOn = camPref('hud', '1') === '1';
+let camDev = '', camSeq = 0, camRunning = false, camPaused = false, camUrlObj = null;
+function camSeg(id, val, onPick) {
+  const box = $(id);
+  const paint = (v) => $$('button', box).forEach((b) => b.classList.toggle('on', b.dataset.v === v));
+  paint(val);
+  box.onclick = (e) => { const b = e.target.closest('button'); if (b) { paint(b.dataset.v); onPick(b.dataset.v); } };
+}
+camSeg('#camSize', camSize, (v) => { camSize = v; camSave('size', v); camLinks(); if (camRunning && camMode === 'mjpeg') camConnect(); });
+camSeg('#camFps', camFpsV, (v) => { camFpsV = v; camSave('fps', v); camLinks(); if (camRunning && camMode === 'mjpeg') camConnect(); });
+camSeg('#camHud', camHudOn ? '1' : '0', (v) => { camHudOn = v === '1'; camSave('hud', v); $('#hudBot').hidden = !camHudOn; });
+$('#hudBot').hidden = !camHudOn;
+function camQs() { return `device=${encodeURIComponent(device)}&size=${camSize}&fps=${camFpsV}`; }
+function camLinks() {
+  $('#camUrl').textContent = `${location.origin}/api/cnc/camera.mjpeg?${camQs()}`;
+  $('#camSnap').href = `/api/cnc/camera/snapshot.jpg?${camQs()}`;
+}
+function camMsg(title, text, spin) {
+  $('#camMsg').hidden = false;
+  $('#camMsg').innerHTML = `<div>${spin ? '<div class="spin"></div>' : ''}<b>${esc(title)}</b>${esc(text || '')}</div>`;
+}
+// Default: the MJPEG stream in the <img> (one connection, full frame rate through Cloudflare).
+// Fallback: one frame per request (long-poll) when a proxy buffers the stream and no picture arrives.
+let camMode = 'mjpeg', camStreamStart = 0, camHasPicture = false;
+function camStart() {
+  camLinks();
+  if (camRunning) return;
+  camRunning = true;
+  camDev = device;
+  camConnect();
+  camInfoLoop();
+}
+function camConnect() {
+  const img = $('#camImg');
+  camHasPicture = false;
+  if (camPaused || !device) return;
+  if (camMode === 'mjpeg') {
+    camStreamStart = Date.now();
+    img.onload = () => { camHasPicture = true; img.hidden = false; $('#camMsg').hidden = true; };
+    img.onerror = () => { if (camRunning && !camPaused) { camMode = 'poll'; camConnect(); } };
+    img.src = `/api/cnc/camera.mjpeg?${camQs()}&v=${camViewer}&t=${Date.now()}`;
+  } else {
+    img.onload = null; img.onerror = null;
+    camLoop();
+  }
+}
+function camStop() {
+  camRunning = false;
+  const img = $('#camImg');
+  img.onerror = null;
+  if (img.src.includes('.mjpeg')) img.src = camFreeze() || '';
+  $('#nCam').textContent = '';
+}
+/** The current picture as a still image, so stopping the stream does not blank the view. */
+function camFreeze() {
+  const img = $('#camImg');
+  if (!camHasPicture || !img.naturalWidth) return '';
+  try {
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return c.toDataURL('image/jpeg', 0.9);
+  } catch { return ''; }
+}
+async function camLoop() {
+  while (camRunning && camMode === 'poll' && page === 'camera' && !document.hidden) {
+    if (camPaused || !device) { await new Promise((r) => setTimeout(r, 500)); continue; }
+    if (camDev !== device) { camDev = device; camSeq = 0; camLinks(); }
+    try {
+      const r = await fetch(`/api/cnc/camera/frame?${camQs()}&viewer=${camViewer}&after=${camSeq}`, { cache: 'no-store' });
+      if (r.status === 200) {
+        const blob = await r.blob();
+        camSeq = Number(r.headers.get('X-Frame-Seq')) || camSeq;
+        const url = URL.createObjectURL(blob);
+        const img = $('#camImg');
+        img.onload = () => { if (camUrlObj && camUrlObj !== url) URL.revokeObjectURL(camUrlObj); camUrlObj = url; camHasPicture = true; };
+        img.src = url; img.hidden = false; $('#camMsg').hidden = true;
+      } else if (r.status !== 204) {
+        const b = await r.json().catch(() => ({}));
+        camMsg('Camera unavailable', b.error || `HTTP ${r.status}`);
+        await new Promise((res) => setTimeout(res, 3000));
+      }
+    } catch (e) {
+      camMsg('Connection lost', e.message, true);
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+  }
+}
+async function camInfoLoop() {
+  while (camRunning && page === 'camera' && !document.hidden) {
+    try {
+      if (camDev !== device && camMode === 'mjpeg') { camDev = device; camConnect(); }
+      const c = device ? await api(`/api/cnc/camera?device=${encodeURIComponent(device)}`) : null;
+      const t = c?.camera || {}, f = c?.frame;
+      const live = !!c?.streaming && !camPaused;
+      $('#camLive').textContent = camPaused ? 'PAUSED' : live ? 'LIVE' : 'WAITING';
+      $('#camLive').className = 'live' + (live ? '' : ' off');
+      $('#nCam').textContent = live ? '●' : ''; $('#nCam').className = 'cnt' + (live ? ' live' : '');
+      $('#csFps').textContent = live ? `${c.fps.toFixed(1)} fps` : '—';
+      $('#csAge').textContent = live && f ? `${(f.age / 1000).toFixed(1)} s` : '—';
+      $('#csRes').textContent = f ? `${f.width}×${f.height}` : '—';
+      $('#csKb').textContent = f ? kb(f.bytes) : '—';
+      $('#camRes').textContent = f ? `${f.width}×${f.height}` : '';
+      $('#camTime').textContent = live && f ? new Date(f.ts).toLocaleTimeString() : '';
+      const why = !c ? 'No tablet has connected yet.' : c.lastError || (!tablets.find((d) => d.device === device)?.online ? 'The tablet is offline.' : '');
+      $('#csTab').textContent = why ? `Tablet: ${why}` : t.live ? `Tablet streaming the ${t.lens || 'back'} camera · ${c.viewers} viewer${c.viewers === 1 ? '' : 's'}`
+        : 'Tablet camera starting…';
+      if (!camPaused && !camHasPicture) {
+        if (why) camMsg('No picture from the tablet', why);
+        else camMsg('Starting the tablet camera…', 'The camera turns on when someone watches. This takes a second or two.', true);
+      }
+      // the server has frames but the <img> shows none: a proxy is buffering the stream → per-frame requests
+      if (camMode === 'mjpeg' && live && !camHasPicture && Date.now() - camStreamStart > 8000) { camMode = 'poll'; camConnect(); }
+    } catch { /* poll() shows connection problems */ }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+$('#camPause').onclick = () => {
+  camPaused = !camPaused;
+  $('#camPause').textContent = camPaused ? '▶ Resume view' : '❚❚ Pause';
+  const img = $('#camImg');
+  if (camPaused) { if (img.src.includes('.mjpeg')) img.src = camFreeze() || ''; } else camConnect();
+};
+$('#camFull').onclick = () => $('#cam').requestFullscreen?.();
+$('#camExit').onclick = () => document.exitFullscreen?.();
+$('#cam').addEventListener('dblclick', () => (document.fullscreenElement ? document.exitFullscreen() : $('#cam').requestFullscreen?.()));
+document.addEventListener('visibilitychange', () => { if (page !== 'camera') return; if (document.hidden) camStop(); else camStart(); });
 
 /* =========================================================== jobs */
 let openJob = null;
@@ -926,6 +1148,9 @@ const EPS = [
   ['GET', '/api/cnc/console?after=SEQ', 'Console lines sent (>>) and received'],
   ['POST', '/api/cnc/command', '{"cmd":"run|hold|resume|stop|load|send|unlock|home|reset|zero|status", "file":"x.nc", "line":"G0X0", "axes":"XY", "wait":true}'],
   ['GET', '/api/cnc/command?id=ID', 'Command state and result'],
+  ['GET', '/api/cnc/camera.mjpeg?size=540p&fps=5', 'Live MJPEG stream of the tablet camera (VLC, OBS, <img>)'],
+  ['GET', '/api/cnc/camera/snapshot.jpg', 'One current picture'],
+  ['GET', '/api/cnc/camera', 'Camera state: streaming, fps, newest frame, tablet errors'],
   ['GET', '/api/jobs?device=&limit=', 'Job log'],
   ['GET', '/api/jobs/ID', 'One job with its events'],
   ['POST', '/api/gcode/upload?name=x.nc', 'Raw request body is stored as an NC file'],

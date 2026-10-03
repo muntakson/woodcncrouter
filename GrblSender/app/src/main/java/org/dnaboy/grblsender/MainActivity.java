@@ -173,7 +173,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private static final int LARGE_LINES = 4000;
     private static final int LARGE_CHARS = 150_000;
     private ToolpathView preview;
-    private TextView chipUsb, chipMachine, chipCloud, chipRemote;
+    private TextView chipUsb, chipMachine, chipCloud, chipRemote, chipCamera;
+    private CameraStreamer camera;
     private View pageControl;
     private FrameLayout pageSettings;
     private final LinearLayout[] navItems = new LinearLayout[5];
@@ -256,6 +257,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         chipMachine = findViewById(R.id.chipMachine);
         chipCloud = findViewById(R.id.chipCloud);
         chipRemote = findViewById(R.id.chipRemote);
+        chipCamera = findViewById(R.id.chipCamera);
+        chipCamera.setOnClickListener(v -> openSettings(SEC_CAMERA));
         pageControl = findViewById(R.id.pageControl);
         pageSettings = findViewById(R.id.pageSettings);
         buildNavRail();
@@ -341,15 +344,34 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         jobLog = JobLog.get(this);
         remote = new RemoteControl(this::remoteExecute, jobLog);
         remote.setStateListener((on, detail) -> updateChips());
+        camera = new CameraStreamer(this, getPreferences(MODE_PRIVATE), () -> getWindowManager().getDefaultDisplay().getRotation());
+        camera.setListener(() -> ui.post(this::updateChips));
+        remote.setCamera(camera);
         publishStatus(true);
         remote.start();
         updateChips();
         restoreDocument();
+        java.util.List<String> perms = new java.util.ArrayList<>();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 3);
+            perms.add(android.Manifest.permission.POST_NOTIFICATIONS);
         }
+        if (Build.VERSION.SDK_INT >= 23 && camera.enabled() && !camera.hasPermission()) perms.add(android.Manifest.permission.CAMERA);
+        if (!perms.isEmpty()) requestPermissions(perms.toArray(new String[0]), 3);
         if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(getIntent().getAction())) connect();
+    }
+
+    /** Settings → Camera asks for the camera permission with this. */
+    void requestCameraPermission() {
+        if (Build.VERSION.SDK_INT >= 23) requestPermissions(new String[]{android.Manifest.permission.CAMERA}, 4);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (camera != null) camera.settingsChanged();
+        if (cameraSection != null) cameraSection.refresh();
+        updateChips();
     }
 
     @Override
@@ -361,12 +383,14 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     @Override
     protected void onStart() {
         super.onStart();
+        if (camera != null) camera.setForeground(true);
         if (streaming) RemoteLog.i("app", "back in foreground during run, line " + ackedLines + "/" + program.size());
     }
 
     @Override
     protected void onStop() {
         super.onStop();
+        if (camera != null) camera.setForeground(false);
         if (streaming) RemoteLog.i("app", "app in background during run (foreground service keeps streaming), line "
                 + ackedLines + "/" + program.size());
     }
@@ -385,6 +409,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         disconnect();
         if (settingsLeave != null) settingsLeave.run();
         remote.stop();
+        camera.shutdown();
         writer.shutdown();
         worker.shutdown();
         super.onDestroy();
@@ -2003,9 +2028,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     // ---------------------------------------------------------------- Navigation: rail, pages, settings sections
 
-    static final int SEC_GENERAL = 0, SEC_FIRMWARE = 1, SEC_UPDATE = 2, SEC_FILES = 3, SEC_JOBS = 4, SEC_DEBUG = 5;
-    private static final String[] SEC_NAMES = {"General", "Firmware", "App update", "Files", "Job log", "Debug console"};
-    private static final String[] SEC_ICONS = {"general", "firmware", "update", "files", "jobs", "debug"};
+    static final int SEC_GENERAL = 0, SEC_FIRMWARE = 1, SEC_UPDATE = 2, SEC_FILES = 3, SEC_JOBS = 4, SEC_CAMERA = 5, SEC_DEBUG = 6;
+    private static final String[] SEC_NAMES = {"General", "Firmware", "App update", "Files", "Job log", "Camera", "Debug console"};
+    private static final String[] SEC_ICONS = {"general", "firmware", "update", "files", "jobs", "camera", "debug"};
     private final LinearLayout[] secItems = new LinearLayout[SEC_NAMES.length];
     private FrameLayout secContent;
     private int section = -1;
@@ -2114,6 +2139,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 settingsLeave = () -> { js.detach(); jobsSection = null; };
                 break;
             }
+            case SEC_CAMERA: {
+                CameraSection cs = new CameraSection(this, camera, getPreferences(MODE_PRIVATE), this::requestCameraPermission);
+                v = cs.build();
+                cameraSection = cs;
+                settingsLeave = () -> { cs.detach(); cameraSection = null; };
+                break;
+            }
             case SEC_DEBUG: {
                 DebugSection ds = new DebugSection(this, this::linkSummary);
                 v = ds.build();
@@ -2129,6 +2161,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     }
 
     private JobsSection jobsSection;
+    private CameraSection cameraSection;
 
     private void updateNavBadge() {
         boolean upd = updateCode > BuildConfig.VERSION_CODE;
@@ -2170,6 +2203,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         boolean online = remote != null && remote.isOnline();
         Ui.setChip(chipCloud, online ? "Backoffice" : "Offline", online ? Ui.OK : Ui.ERR);
         Ui.setChip(chipRemote, remoteControlAllowed() ? "Remote" : "Remote off", remoteControlAllowed() ? Ui.ACCENT : Ui.MUTED);
+        // privacy indicator: shown while the camera is being watched on the backoffice
+        boolean camLive = camera != null && camera.isLive();
+        chipCamera.setVisibility(camLive ? View.VISIBLE : View.GONE);
+        if (camLive) Ui.setChip(chipCamera, "Camera LIVE", Ui.ERR);
     }
 
     private static int stateColor(String st) {
@@ -2238,6 +2275,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (remote.isOnline()) b.append("ONLINE · last sync ").append((now - remote.lastOkMs()) / 1000).append(" s ago");
         else b.append("OFFLINE").append(remote.lastError() != null ? " · " + remote.lastError() : "");
         b.append("\nRemote      ").append(remoteControlAllowed() ? "control allowed" : "control off – status, Hold and Stop only");
+        b.append("\nCamera      ").append(camera != null ? camera.summary() : "–");
         b.append("\nCNC         ");
         if (port == null) b.append("not connected · ").append(boardName(board()));
         else {

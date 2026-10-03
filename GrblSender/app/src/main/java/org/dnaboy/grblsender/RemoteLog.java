@@ -59,6 +59,8 @@ public final class RemoteLog {
     /** This tablet's identity as sent with every upload (id = ANDROID_ID). */
     static JSONObject device() { return device; }
 
+    static String deviceId() { return device != null ? device.optString("id") : ""; }
+
     private RemoteLog() { }
 
     public static synchronized void init(Context ctx, UpdateListener listener) {

@@ -214,6 +214,75 @@ setInterval(() => {
   for (const [k, c] of commands) if (c.created < old) commands.delete(k);
 }, 600 * 1000);
 
+// ---------------------------------------------------------------- camera relay (tablet -> backoffice -> browsers)
+// The tablet's camera streams only while someone watches. A viewer (dashboard page, MJPEG client, snapshot)
+// registers interest; the next sync reply tells the tablet camera.want = true, and the tablet then POSTs one
+// JPEG per frame to /api/device/frame. Each frame reply says whether to keep going, so the camera stops
+// within a few seconds after the last viewer leaves.
+const CAM_SIZES = { '360p': [640, 360], '540p': [960, 540], '720p': [1280, 720] };
+const CAM_VIEWER_MS = 4000;          // a viewer counts as watching this long after its last request
+const CAM_STALE_MS = 5000;           // a frame older than this is not served as "live"
+const cams = new Map();              // device id -> camera state
+
+function camState(id) {
+  let c = cams.get(id);
+  if (!c) {
+    c = { frame: null, seq: 0, ts: 0, w: 0, h: 0, recent: [], viewers: new Map(), waiters: new Set(), mjpeg: new Set(),
+      lastError: null, bytes: 0 };
+    cams.set(id, c);
+  }
+  return c;
+}
+
+/** What the viewers ask for: the largest size, the highest fps; null when nobody watches. */
+function camWanted(id) {
+  const c = cams.get(id);
+  if (!c) return null;
+  const now = Date.now();
+  let fps = 0, size = '', quality = 0;
+  const rank = (s) => Object.keys(CAM_SIZES).indexOf(s);
+  const add = (v) => {
+    fps = Math.max(fps, v.fps); quality = Math.max(quality, v.quality);
+    if (rank(v.size) > rank(size)) size = v.size;
+  };
+  for (const [k, v] of c.viewers) { if (now - v.last > CAM_VIEWER_MS) c.viewers.delete(k); else add(v); }
+  for (const m of c.mjpeg) add(m);
+  if (!fps) return null;
+  return { want: true, fps, size, width: CAM_SIZES[size][0], height: CAM_SIZES[size][1], quality };
+}
+
+function camPrefs(q) {
+  const size = CAM_SIZES[q.get('size')] ? q.get('size') : '540p';
+  const fps = Math.min(Math.max(Number(q.get('fps')) || 5, 1), 15);
+  const quality = Math.min(Math.max(Number(q.get('quality')) || 70, 30), 90);
+  return { size, fps, quality };
+}
+
+/** Register a viewer; if the camera was idle, wake the tablet's sync so it starts right away. */
+function camWatch(id, key, prefs) {
+  const c = camState(id);
+  const wasIdle = !camWanted(id);
+  c.viewers.set(key, { ...prefs, last: Date.now() });
+  if (wasIdle) { const d = cnc.get(id); if (d) wakeDevice(d); }
+}
+
+function camInfo(id) {
+  const c = cams.get(id), now = Date.now();
+  const w = camWanted(id);
+  if (!c) return { device: id, streaming: false, viewers: 0, wanted: null, frame: null };
+  const recent = c.recent.filter((t) => now - t < 5000);
+  return { device: id, streaming: !!c.frame && now - c.ts < CAM_STALE_MS, viewers: c.viewers.size + c.mjpeg.size,
+    wanted: w, fps: +(recent.length / 5).toFixed(1),
+    frame: c.frame ? { seq: c.seq, ts: c.ts, age: now - c.ts, width: c.w, height: c.h, bytes: c.frame.length } : null,
+    camera: c.camera || null, lastError: c.lastError };
+}
+
+function mjpegWrite(res, c) {
+  res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${c.frame.length}\r\nX-Frame-Seq: ${c.seq}\r\n\r\n`);
+  res.write(c.frame);
+  res.write('\r\n');
+}
+
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 
 function serveFile(res, file, extraHeaders = {}) {
@@ -301,7 +370,32 @@ async function handle(req, res) {
       for (const c of cmds) { const rec = commands.get(c.id); if (rec) { rec.state = 'queued'; d.queue.push(rec); } }
       return;
     }
-    return send(res, 200, { ok: true, commands: cmds, jobEventsStored: stored, serverTime: Date.now() });
+    if (data.camera) {                         // the tablet's camera state (available, lens, last error)
+      const c = camState(id);
+      c.camera = data.camera;
+      c.lastError = data.camera.error || null;
+    }
+    return send(res, 200, { ok: true, commands: cmds, jobEventsStored: stored, serverTime: Date.now(),
+      camera: camWanted(id) || { want: false } });
+  }
+
+  // ---- camera frames from the tablet (ingest key): one JPEG per request
+  if (req.method === 'POST' && p === '/api/device/frame') {
+    if (!safeEqual(req.headers['x-ingest-key'] || '', INGEST_KEY)) return send(res, 401, { error: 'bad key' });
+    const id = String(req.headers['x-device-id'] || '');
+    if (!id) return send(res, 400, { error: 'X-Device-Id required' });
+    const body = await readBody(req, 3 * 1024 * 1024);
+    if (body.length < 4 || body[0] !== 0xff || body[1] !== 0xd8) return send(res, 400, { error: 'body must be a JPEG' });
+    const c = camState(id), now = Date.now();
+    c.frame = body; c.seq++; c.ts = now; c.bytes += body.length;
+    c.w = Number(req.headers['x-frame-width']) || 0; c.h = Number(req.headers['x-frame-height']) || 0;
+    c.recent.push(now);
+    while (c.recent.length && now - c.recent[0] > 5000) c.recent.shift();
+    for (const w of c.waiters) w();
+    c.waiters.clear();
+    for (const r of c.mjpeg) mjpegWrite(r.res, c);
+    if (cnc.has(id)) cnc.get(id).seen = now;
+    return send(res, 200, camWanted(id) || { want: false });
   }
 
   // ---- remote-control API: dashboard login (LAN / Basic) or "Authorization: Bearer CNC_API_KEY"
@@ -359,6 +453,59 @@ async function handle(req, res) {
         });
       }
       return send(res, 202, publicCommand(c));
+    }
+    if (isGet && p === '/api/cnc/camera') {
+      const id = pickDevice(url.searchParams.get('device'));
+      if (!id) return send(res, 404, { error: 'no tablet has connected yet' });
+      return send(res, 200, camInfo(id));
+    }
+    if (isGet && (p === '/api/cnc/camera/frame' || p === '/api/cnc/camera/snapshot.jpg')) {
+      const id = pickDevice(url.searchParams.get('device'));
+      if (!id) return send(res, 404, { error: 'no tablet has connected yet' });
+      const snapshot = p.endsWith('.jpg');
+      const key = snapshot ? 'snapshot:' + crypto.randomUUID() : String(url.searchParams.get('viewer') || clientIp(req));
+      const prefs = camPrefs(url.searchParams);
+      camWatch(id, key, prefs);
+      const c = camState(id);
+      const after = snapshot ? 0 : Number(url.searchParams.get('after') || 0);
+      const fresh = () => c.frame && c.seq > after && Date.now() - c.ts < CAM_STALE_MS;
+      if (!fresh()) {                               // long-poll for the next frame
+        let done;
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, snapshot ? 10000 : 8000);
+          done = () => { clearTimeout(t); resolve(); };
+          c.waiters.add(done);
+          res.on('close', done);
+        });
+        c.waiters.delete(done);
+        if (res.destroyed) return;
+      }
+      if (snapshot) c.viewers.delete(key);
+      if (!fresh()) {
+        const d = cnc.get(id);
+        const why = !d || Date.now() - d.seen > ONLINE_MS ? 'the tablet is offline'
+          : c.lastError ? c.lastError : 'no frame from the tablet yet';
+        return send(res, snapshot ? 504 : 204, snapshot ? { error: why } : '', snapshot ? {} : { 'X-Camera-Status': encodeURIComponent(why) });
+      }
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': c.frame.length, 'Cache-Control': 'no-store',
+        'X-Frame-Seq': c.seq, 'X-Frame-Ts': c.ts, 'X-Frame-Width': c.w, 'X-Frame-Height': c.h,
+        ...(snapshot ? { 'Content-Disposition': `inline; filename="cnc-${new Date(c.ts).toISOString().replace(/[:.]/g, '-')}.jpg"` } : {}) });
+      return res.end(c.frame);
+    }
+    if (isGet && p === '/api/cnc/camera.mjpeg') {
+      const id = pickDevice(url.searchParams.get('device'));
+      if (!id) return send(res, 404, { error: 'no tablet has connected yet' });
+      const c = camState(id);
+      const wasIdle = !camWanted(id);
+      const client = { res, ...camPrefs(url.searchParams) };
+      c.mjpeg.add(client);
+      if (wasIdle && cnc.has(id)) wakeDevice(cnc.get(id));
+      res.writeHead(200, { 'Content-Type': 'multipart/x-mixed-replace; boundary=frame', 'Cache-Control': 'no-store',
+        Connection: 'close', 'X-Accel-Buffering': 'no' });
+      if (c.frame && Date.now() - c.ts < CAM_STALE_MS) mjpegWrite(res, c);
+      const keep = setInterval(() => { if (c.frame) mjpegWrite(res, c); }, 20000);   // keeps proxies from timing out
+      req.on('close', () => { clearInterval(keep); c.mjpeg.delete(client); });
+      return;
     }
     if (isGet && p === '/api/jobs') {
       const device = url.searchParams.get('device');

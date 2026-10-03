@@ -58,6 +58,7 @@
         <TextView android:id="@+id/chipMachine" style="@style/Chip" android:text="● —" />
         <TextView android:id="@+id/chipCloud" style="@style/Chip" android:text="● Backoffice" />
         <TextView android:id="@+id/chipRemote" style="@style/Chip" android:text="● Remote" />
+        <TextView android:id="@+id/chipCamera" style="@style/Chip" android:text="● Camera LIVE" android:visibility="gone" />
     </LinearLayout>
 
     <LinearLayout

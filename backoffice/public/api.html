@@ -154,6 +154,7 @@
       <div class="fact"><b>Log upload</b>Thread <code>remote-log</code>: queues every app log line (max 5000), posts batches of ≤500 to <a href="#ingest">/api/ingest</a> about every 0.5 s while there is traffic. On failure it keeps the lines and retries with backoff 1 → 30 s.</div>
       <div class="fact"><b>Remote sync</b>Thread <code>remote-sync</code>: loops on <a href="#sync">/api/device/sync</a> with a 1.5 s long-poll. Sends status, console lines, command results and job events; receives commands. Retries with backoff 2 → 30 s. The title-bar chip shows <i>Backoffice</i> / <i>Offline</i>.</div>
       <div class="fact"><b>Update check</b>At start-up, and whenever an ingest reply's <code>latestVersionCode</code> is newer than the installed build: <a href="#version">/api/version</a>. Download: <a href="#apk">/apk/latest.apk</a>.</div>
+      <div class="fact"><b>Camera</b>Class <code>CameraStreamer</code>: idle until a viewer watches. The sync reply's <code>camera.want</code> starts it; then threads <code>camera-upload</code> (encode) and <code>camera-send</code> POST one JPEG per request to <a href="#frame">/api/device/frame</a>. Each frame reply says whether anyone is still watching. Viewers: <a href="#cam-mjpeg">MJPEG</a>, <a href="#cam-frame">frame long-poll</a>, <a href="#cam-snap">snapshot</a>.</div>
       <div class="fact"><b>On demand</b>Settings → Firmware: <a href="#firmware">/api/firmware</a>, <a href="#firmware-file">/firmware/…</a>. Settings → Files and remote <i>load/run</i>: <a href="#gcode">/api/gcode</a>, <a href="#gcode-file">/gcode/…</a>. Server <i>Test</i>: <a href="#health">/health</a> + /api/version on the typed URL.</div>
     </div>
 
@@ -239,6 +240,7 @@ const EPS = [
       ['results[].id / ok / msg', 'string / bool / string', 'Command id, success, human-readable result'],
       ['jobEvents[]', 'array', '≤ 100 unsynced events, see <a href="#job-events">Job-log events</a>'],
       ['wait', 'ms', '0–20000. The app sends 1500, or 0 when it is reporting results'],
+      ['camera', 'object', 'Camera state: <code>enabled</code>, <code>permission</code>, <code>foreground</code>, <code>lens</code> (back|front), <code>live</code>, <code>fps</code>, <code>width</code>, <code>height</code>, <code>bytes</code>, <code>error</code> (why it cannot stream)'],
     ],
     req: { device: { id: 'd32a9d4e774bb151', model: 'U320', appVersion: '1.26', appCode: 27 },
       status: { connected: true, board: 'bluepill', machine: 'Idle', wpos: [0, 0, 5], streaming: false, remoteControl: true, app: '1.26' },
@@ -252,9 +254,19 @@ const EPS = [
       ['commands[].age', 'ms', 'Time since the command was queued (the app refuses > 20 000)'],
       ['jobEventsStored', 'int', 'Events received (re-sent uids are ignored)'],
       ['serverTime', 'ms', 'Server clock'],
+      ['camera', 'object', '<code>{"want": false}</code>, or what the viewers ask for: <code>{want: true, fps, size, width, height, quality}</code>. See <a href="#frame">/api/device/frame</a>'],
     ],
     err: [['400', 'bad json / device.id required'], ['401', 'bad key']],
     notes: 'A tablet counts as <b>online</b> while it synced within the last 10 s. A newer sync from the same tablet releases an older waiting one. If the tablet drops the connection before the reply, its commands go back to the queue.' },
+
+  { g: 'g-app', id: 'frame', m: 'POST', p: '/api/device/frame', auth: 'key', app: 'CameraStreamer.sendLoop()',
+    sum: 'One camera frame: the raw request body is a JPEG (≤ 3 MB). The server keeps the newest frame per tablet and pushes it to every viewer. The reply is the viewers’ current wish, so the tablet stops within a few seconds after the last viewer leaves.',
+    headers: [['X-Device-Id', 'header', 'Required: the tablet’s <code>device.id</code>'], ['X-Frame-Width / X-Frame-Height', 'header', 'Picture size in pixels'], ['Content-Type', 'header', '<code>image/jpeg</code>']],
+    res: { want: true, fps: 5, size: '540p', width: 960, height: 540, quality: 70 },
+    resF: [['want', 'bool', '<code>false</code>: nobody is watching any more, stop the camera'], ['fps', '1–15', 'Highest frame rate any viewer asked for'], ['size / width / height', '360p | 540p | 720p', 'Largest size any viewer asked for (640×360, 960×540, 1280×720)'], ['quality', '30–90', 'JPEG quality']],
+    err: [['400', 'X-Device-Id required / body must be a JPEG'], ['401', 'bad key']],
+    curl: `curl ${KEYH} -H "X-Device-Id: d32a9d4e774bb151" -H "Content-Type: image/jpeg" \\\n  --data-binary @frame.jpg ${O}/api/device/frame`,
+    notes: 'A viewer counts as watching for 4 s after its last request, an MJPEG client for as long as it stays connected. The tablet uses the camera only while Grbl Sender is in the foreground (an Android rule), shows a red <b>Camera LIVE</b> chip while streaming, and can be switched off in Settings → Camera.' },
 
   { g: 'g-app', id: 'version', m: 'GET', p: '/api/version', auth: 'public', app: 'RemoteLog.checkVersion(), Settings → App update, server Test',
     sum: 'Newest published APK. If its <code>versionCode</code> is higher than the installed build, the app offers the update.',
@@ -330,6 +342,30 @@ const EPS = [
   { g: 'g-remote', id: 'cnc-command-get', m: 'GET', p: '/api/cnc/command?id={id}', auth: 'api',
     sum: 'Look up a command record (kept for 1 h). Poll it when you queued without <code>wait</code>.',
     curl: `curl ${BEAR} "${O}/api/cnc/command?id=9f3e2c1a-…"`, err: [['404', 'unknown command id']] },
+
+  { g: 'g-remote', id: 'cam-info', m: 'GET', p: '/api/cnc/camera', auth: 'api',
+    sum: 'Camera state of a tablet: whether frames are flowing, the measured rate, the newest frame, and what the tablet reported about its camera.',
+    params: [['device', 'string', 'Optional tablet id, default the last one seen']],
+    res: { device: 'd32a9d4e774bb151', streaming: true, viewers: 1, wanted: { want: true, fps: 5, size: '540p', width: 960, height: 540, quality: 70 }, fps: 5, frame: { seq: 219, ts: 1791007000000, age: 120, width: 960, height: 540, bytes: 16384 }, camera: { enabled: true, permission: true, foreground: true, lens: 'back', live: true }, lastError: null },
+    resF: [['streaming', 'bool', 'A frame arrived within the last 5 s'], ['fps', 'number', 'Frames received per second (5 s average)'], ['lastError', 'string|null', 'Why the tablet cannot stream, e.g. <i>camera permission not granted on the tablet</i>, <i>Grbl Sender is in the background – Android blocks the camera</i>']],
+    curl: `curl ${BEAR} ${O}/api/cnc/camera` },
+
+  { g: 'g-remote', id: 'cam-mjpeg', m: 'GET', p: '/api/cnc/camera.mjpeg', auth: 'api',
+    sum: 'Live MJPEG stream (<code>multipart/x-mixed-replace; boundary=frame</code>) for an <code>&lt;img&gt;</code>, VLC or OBS. Connecting turns the tablet’s camera on; the camera turns off a few seconds after the last client disconnects. The newest frame is re-sent every 20 s so proxies keep the connection open.',
+    params: [['device', 'string', 'Optional tablet id'], ['size', '360p | 540p | 720p', 'Default 540p'], ['fps', '1–15', 'Default 5'], ['quality', '30–90', 'JPEG quality, default 70']],
+    curl: `vlc "${location.protocol}//USER:PASSWORD@${location.host}/api/cnc/camera.mjpeg?size=720p&fps=10"\n# or\ncurl ${BEAR} -N "${O}/api/cnc/camera.mjpeg?fps=5" > cnc.mjpeg` },
+
+  { g: 'g-remote', id: 'cam-frame', m: 'GET', p: '/api/cnc/camera/frame', auth: 'api',
+    sum: 'One frame per request (long-poll), for clients behind proxies that buffer MJPEG. Waits up to 8 s for a frame newer than <code>after</code>; answers <code>200</code> with the JPEG, or <code>204</code> with header <code>X-Camera-Status</code> (URL-encoded reason) when none came.',
+    params: [['after', 'int', 'Last <code>X-Frame-Seq</code> you received (0 to start)'], ['viewer', 'string', 'A stable id per viewer, so repeated requests count as one watcher'], ['device / size / fps / quality', '', 'As for MJPEG']],
+    resF: [['X-Frame-Seq', 'header', 'Frame number; pass it as <code>after</code> next time'], ['X-Frame-Ts', 'header', 'When the server received the frame (ms)'], ['X-Frame-Width / X-Frame-Height', 'header', 'Picture size']],
+    curl: `curl ${BEAR} -D - -o frame.jpg "${O}/api/cnc/camera/frame?after=0&viewer=me"` },
+
+  { g: 'g-remote', id: 'cam-snap', m: 'GET', p: '/api/cnc/camera/snapshot.jpg', auth: 'api',
+    sum: 'A single current picture. If the camera is idle it is started for this request, which then waits up to 10 s for the first frame.',
+    params: [['device / size / quality', '', 'As for MJPEG']],
+    err: [['504', 'the tablet is offline / camera error / no frame from the tablet yet']],
+    curl: `curl ${BEAR} -o cnc.jpg "${O}/api/cnc/camera/snapshot.jpg?size=720p"` },
 
   { g: 'g-remote', id: 'jobs', m: 'GET', p: '/api/jobs', auth: 'api',
     sum: 'Job log built from the tablets’ <a href="#job-events">job events</a>, newest first.',
@@ -442,6 +478,7 @@ function epHtml(e) {
     <div class="bd">
       <p>${e.sum}</p>
       ${e.params ? '<h3>Query parameters</h3>' + rows(e.params, ['Name', 'Type', 'Description']) : ''}
+      ${e.headers ? '<h3>Request headers</h3>' + rows(e.headers, ['Header', '', 'Description']) : ''}
       ${e.body ? '<h3>Request body</h3>' + rows(e.body, ['Field', 'Type', 'Description']) : ''}
       ${e.resF ? '<h3>Response fields</h3>' + rows(e.resF, ['Field', 'Type', 'Description']) : ''}
       ${e.err ? '<h3>Errors</h3>' + rows(e.err.map(([c, d]) => [c, '', esc(d)]), ['Status', '', 'Error']) : ''}

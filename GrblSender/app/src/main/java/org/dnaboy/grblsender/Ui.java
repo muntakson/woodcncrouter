@@ -241,6 +241,12 @@ final class Ui {
                     line(c, 4, 7, 20, 7); line(c, 4, 17, 20, 17);
                     fillCircle(c, 9, 7, 2.6f); fillCircle(c, 15, 17, 2.6f);
                     break;
+                case "camera":    // camera body, lens, viewfinder bump
+                    c.drawRoundRect(new RectF(2.5f, 7, 21.5f, 19.5f), 2.5f, 2.5f, p);
+                    path.moveTo(8, 7); path.lineTo(9.5f, 4.5f); path.lineTo(14.5f, 4.5f); path.lineTo(16, 7);
+                    c.drawPath(path, p);
+                    c.drawCircle(12, 13, 3.6f, p);
+                    break;
                 case "cloud":
                     path.moveTo(7, 18.5f);
                     path.cubicTo(3.5f, 18.5f, 2.5f, 14, 6, 12.8f);
