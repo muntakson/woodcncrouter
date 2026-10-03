@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API reference · Grbl Sender Console</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #05070b; --side: #080b11; --panel: #0d121b; --panel2: #121925; --inset: #070a10;
+    --line: rgba(148, 163, 184, .12); --line2: rgba(148, 163, 184, .24);
+    --text: #e6edf6; --muted: #8b98a9; --dim: #5d6a7c;
+    --cyan: #22d3ee; --violet: #8b5cf6; --ok: #34d399; --warn: #fbbf24; --err: #f87171; --run: #60a5fa;
+    --grad: linear-gradient(110deg, #22d3ee 0%, #818cf8 55%, #c084fc 100%);
+    --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 76px; }
+  body { overflow-x: hidden; margin: 0; background: var(--bg); color: var(--text); font: 14.5px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: var(--mono); }
+  :not(pre) > code { font-size: 12.5px; background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; color: #c7d2fe; white-space: nowrap; }
+  [hidden] { display: none !important; }
+
+  /* ---------- shell ---------- */
+  header.top { position: sticky; top: 0; z-index: 20; height: 60px; display: flex; align-items: center; gap: 14px; padding: 0 22px;
+    background: rgba(5, 7, 11, .85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: .04em; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  .brand img { width: 26px; height: 26px; }
+  .brand b { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .brand small { font: 500 11px var(--mono); color: var(--dim); letter-spacing: .1em; margin-left: 4px; }
+  .spacer { flex: 1; }
+  #q { width: 260px; max-width: 40vw; background: var(--inset); border: 1px solid var(--line2); border-radius: 9px; padding: 7px 12px; color: var(--text); font: 13px var(--mono); }
+  #q:focus { outline: none; border-color: var(--cyan); }
+  .back { font: 12.5px var(--mono); color: var(--muted); }
+  .burger { display: none; background: none; border: 1px solid var(--line2); border-radius: 8px; color: var(--text); padding: 5px 9px; cursor: pointer; }
+
+  .wrap { display: grid; grid-template-columns: 270px minmax(0, 1fr); max-width: 1440px; margin: 0 auto; }
+  nav.toc { position: sticky; top: 60px; height: calc(100vh - 60px); overflow-y: auto; padding: 18px 14px 40px 22px; border-right: 1px solid var(--line); }
+  .toc .grp { font: 600 10.5px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--dim); padding: 16px 8px 6px; }
+  .toc a { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 7px; color: var(--muted); font-size: 13px; }
+  .toc a:hover { color: var(--text); background: rgba(255, 255, 255, .035); text-decoration: none; }
+  .toc a.on { color: var(--text); background: rgba(34, 211, 238, .08); }
+  .toc a .m { font: 700 9.5px var(--mono); width: 40px; flex: none; }
+  .toc a code { background: none; border: 0; padding: 0; color: inherit; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+
+  main { padding: 28px 36px 120px; min-width: 0; }
+  h1 { font-size: 30px; letter-spacing: -.02em; margin: 0 0 6px; }
+  h1 span { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { color: var(--muted); max-width: 820px; margin: 0 0 24px; }
+  h2.sec { font-size: 21px; letter-spacing: -.01em; margin: 46px 0 6px; padding-top: 6px; }
+  .secd { color: var(--muted); margin: 0 0 18px; max-width: 860px; }
+  h3 { font-size: 13px; font-family: var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 20px 0 8px; font-weight: 600; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-bottom: 16px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .fact { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .fact b { display: block; font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin-bottom: 4px; }
+
+  /* ---------- endpoint ---------- */
+  .ep { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 18px; overflow: hidden; }
+  .ep > .hd { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel2); }
+  .ep .path { font: 600 15px var(--mono); color: var(--text); word-break: break-all; }
+  .ep .bd { padding: 6px 20px 18px; }
+  .ep .bd > p:first-child { margin-top: 12px; }
+  .badge { display: inline-block; font: 700 11px var(--mono); padding: 3px 8px; border-radius: 6px; letter-spacing: .03em; }
+  .GET { color: var(--cyan); background: rgba(34, 211, 238, .12); }
+  .POST { color: var(--ok); background: rgba(52, 211, 153, .12); }
+  .DELETE { color: var(--err); background: rgba(248, 113, 113, .12); }
+  .toc .GET, .toc .POST, .toc .DELETE { background: none; }
+  .chip { font: 500 11px var(--mono); border: 1px solid var(--line2); border-radius: 999px; padding: 2px 9px; color: var(--muted); white-space: nowrap; }
+  .chip.k { color: var(--warn); border-color: rgba(251, 191, 36, .35); }
+  .chip.a { color: #c4b5fd; border-color: rgba(139, 92, 246, .4); }
+  .chip.p { color: var(--ok); border-color: rgba(52, 211, 153, .35); }
+  .chip.app { color: var(--cyan); border-color: rgba(34, 211, 238, .35); }
+  .note { border-left: 3px solid var(--violet); background: rgba(139, 92, 246, .07); padding: 9px 14px; border-radius: 0 8px 8px 0; color: #cbd5e1; margin: 12px 0; font-size: 13.5px; }
+  .note.warn { border-color: var(--warn); background: rgba(251, 191, 36, .06); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align: left; font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); padding: 8px 10px; border-bottom: 1px solid var(--line2); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child code { color: var(--cyan); }
+  td.t { font: 12px var(--mono); color: var(--violet); white-space: nowrap; }
+  .tw { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--inset); }
+
+  .ex { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+  .code { position: relative; }
+  .code .lbl { font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin: 14px 0 6px; display: flex; align-items: center; }
+  pre { margin: 0; background: var(--inset); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow-x: auto; font: 12.5px/1.55 var(--mono); color: #cbd5e1; }
+  .cp { margin-left: auto; background: none; border: 1px solid var(--line2); color: var(--muted); border-radius: 6px; font: 600 10.5px var(--mono); padding: 2px 8px; cursor: pointer; letter-spacing: .05em; }
+  .cp:hover { color: var(--text); border-color: var(--cyan); }
+  .s { color: #a5f3fc; } .n { color: #fcd34d; } .k { color: #c4b5fd; } .c { color: var(--dim); }
+
+  .empty { color: var(--muted); padding: 30px 0; }
+  @media (max-width: 900px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); }
+    :not(pre) > code { white-space: normal; word-break: break-word; }
+    .ep > .hd .chip { white-space: normal; }
+    nav.toc { position: fixed; top: 60px; left: 0; width: 280px; z-index: 30; background: var(--side); transform: translateX(-100%); transition: transform .2s; }
+    body.toc-open nav.toc { transform: none; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .55); }
+    .burger { display: block; }
+    main { padding: 20px 16px 80px; }
+    #q { width: auto; flex: 1; min-width: 0; }
+    header.top .spacer { display: none; }
+    .brand small, .back { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <button class="burger" id="burger" aria-label="Contents">☰</button>
+  <a class="brand" href="/app"><img src="/favicon.svg" alt=""><span>GRBL<b>·SENDER</b></span><small>API REFERENCE</small></a>
+  <span class="spacer"></span>
+  <input id="q" type="search" placeholder="Filter endpoints…  ( / )" autocomplete="off">
+  <a class="back" href="/app#api">← Console</a>
+</header>
+
+<div class="wrap">
+  <nav class="toc" id="toc"></nav>
+  <main id="main">
+    <h1>Grbl Sender <span>API reference</span></h1>
+    <p class="lead">Every HTTP call between the Android app (Grbl Sender, <code>org.dnaboy.grblsender</code>) and this backoffice:
+      what the app sends, what it expects back, the commands it accepts from the remote-control API, and the dashboard endpoints
+      that read what it uploaded. The examples use this server: <code id="origin"></code>.</p>
+
+    <section id="overview">
+      <div class="grid2">
+        <div class="fact"><b>Base URL</b>Set on the tablet in <i>Settings → General → Backoffice server</i>. Default <code>https://cnc.iotok.org</code> (built into the APK as <code>LOG_SERVER</code>). On the LAN: <code>http://192.168.219.157:3077</code>.</div>
+        <div class="fact"><b>Format</b>JSON request and response bodies (<code>Content-Type: application/json</code>) unless stated. Timestamps are Unix epoch <b style="display:inline;letter-spacing:0;text-transform:none;font:inherit;color:var(--text)">milliseconds</b>. Responses carry <code>Cache-Control: no-store</code>.</div>
+        <div class="fact"><b>Errors</b>JSON <code>{"error": "…"}</code> with a 4xx/5xx status. Exception: auth failures answer <code>401</code> with plain text and a <code>WWW-Authenticate: Basic</code> challenge.</div>
+      </div>
+    </section>
+
+    <h2 class="sec" id="auth">Authentication</h2>
+    <p class="secd">Four access levels. The tablet itself only ever uses the first two.</p>
+    <div class="tw"><table>
+      <tr><th>Level</th><th>How</th><th>Used by</th></tr>
+      <tr><td><span class="chip p">public</span></td><td>No credentials.</td><td>App: version check, release history, APK, firmware and G-code downloads.</td></tr>
+      <tr><td><span class="chip k">ingest key</span></td><td>Header <code>X-Ingest-Key: &lt;INGEST_KEY&gt;</code>. The key is compiled into the APK from <code>backoffice/.env</code> at build time.</td><td>App: log upload and the remote-control sync loop.</td></tr>
+      <tr><td><span class="chip a">admin</span></td><td>Open from the LAN (192.168.x, 10.x, 172.16–31.x, localhost). Through the public proxy: HTTP Basic <code>DASH_USER</code> / <code>DASH_PASSWORD</code>.</td><td>This dashboard and this page.</td></tr>
+      <tr><td><span class="chip a">admin or API key</span></td><td>Admin as above, <i>or</i> header <code>Authorization: Bearer &lt;CNC_API_KEY&gt;</code>.</td><td>Scripts and other servers that drive the machine.</td></tr>
+    </table></div>
+    <div class="note warn">Requests that arrive through nginx (they carry <code>X-Real-IP</code>) are never treated as LAN, so a public request always needs Basic auth or the API key, whatever its source address.</div>
+
+    <h2 class="sec" id="flows">How the app talks to the backoffice</h2>
+    <div class="grid2">
+      <div class="fact"><b>Log upload</b>Thread <code>remote-log</code>: queues every app log line (max 5000), posts batches of ≤500 to <a href="#ingest">/api/ingest</a> about every 0.5 s while there is traffic. On failure it keeps the lines and retries with backoff 1 → 30 s.</div>
+      <div class="fact"><b>Remote sync</b>Thread <code>remote-sync</code>: loops on <a href="#sync">/api/device/sync</a> with a 1.5 s long-poll. Sends status, console lines, command results and job events; receives commands. Retries with backoff 2 → 30 s. The title-bar chip shows <i>Backoffice</i> / <i>Offline</i>.</div>
+      <div class="fact"><b>Update check</b>At start-up, and whenever an ingest reply's <code>latestVersionCode</code> is newer than the installed build: <a href="#version">/api/version</a>. Download: <a href="#apk">/apk/latest.apk</a>.</div>
+      <div class="fact"><b>On demand</b>Settings → Firmware: <a href="#firmware">/api/firmware</a>, <a href="#firmware-file">/firmware/…</a>. Settings → Files and remote <i>load/run</i>: <a href="#gcode">/api/gcode</a>, <a href="#gcode-file">/gcode/…</a>. Server <i>Test</i>: <a href="#health">/health</a> + /api/version on the typed URL.</div>
+    </div>
+
+    <div id="eps"></div>
+
+    <h2 class="sec" id="commands">Remote commands the app executes</h2>
+    <p class="secd">Queued with <a href="#cnc-command">POST /api/cnc/command</a> and delivered in the reply to the tablet's <a href="#sync">sync</a>. The app runs each command on its UI thread and reports
+      <code>{"id", "ok", "msg"}</code> in its next sync. A command the tablet has not collected within 30 s expires on the server. If a command is older than 20 s when it arrives (<code>age</code>), the app refuses it.</p>
+    <div class="tw"><table id="cmdTable"></table></div>
+    <h3>Checks, in this order</h3>
+    <ol style="color:var(--muted);margin-top:0">
+      <li><b style="color:var(--text)">Remote control switch</b> (Settings → General, pref <code>remoteControl</code>, default on). When off, only <code>hold</code>, <code>stop</code> and <code>status</code> run. The server already answers <code>403</code> for the rest when the last status said <code>remoteControl:false</code>.</li>
+      <li><b style="color:var(--text)">Controller connected</b>: every command except <code>status</code> and <code>load</code> needs the USB link → <i>"the controller is not connected to the tablet"</i>.</li>
+      <li><b style="color:var(--text)">Job running</b>: only <code>hold</code>, <code>resume</code>, <code>stop</code>, <code>reset</code>, <code>status</code> and <code>send</code> with <code>!</code> <code>~</code> <code>?</code> → <i>"a job is running – only hold, resume and stop are accepted"</i>.</li>
+    </ol>
+
+    <h2 class="sec" id="status-object">The status object</h2>
+    <p class="secd">Built by the app (<code>MainActivity.publishStatus</code>, at most every 250 ms) and sent with every sync. The server stores the latest one per tablet, adds <code>at</code> (receive time), and returns it as <code>status</code> from <a href="#cnc-status">/api/cnc/status</a>.</p>
+    <div class="tw"><table id="statusTable"></table></div>
+
+    <h2 class="sec" id="job-events">Job-log events</h2>
+    <p class="secd">The tablet keeps its own job log (<code>files/jobs.json</code>, Settings → Job log) and uploads each event once with the sync. <code>uid</code> makes uploads idempotent. Read them back with <a href="#jobs">/api/jobs</a>.</p>
+    <div class="tw"><table id="eventTable"></table></div>
+
+    <p class="empty" id="noHits" hidden>No endpoint matches the filter.</p>
+  </main>
+</div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const O = location.origin;
+$('#origin').textContent = O;
+
+const AUTH = {
+  public: '<span class="chip p">public</span>',
+  key: '<span class="chip k">X-Ingest-Key</span>',
+  admin: '<span class="chip a">admin</span>',
+  api: '<span class="chip a">admin or Bearer CNC_API_KEY</span>',
+};
+const KEYH = `-H "X-Ingest-Key: $INGEST_KEY"`;
+const BEAR = `-H "Authorization: Bearer $CNC_API_KEY"`;
+
+/* Each endpoint: group, id, method, path, auth, app (where the APK calls it), summary, params / fields tables,
+   request + response examples, errors and notes. */
+const GROUPS = [
+  { id: 'g-app', title: 'Called by the app', desc: 'Endpoints the APK calls. Classes: RemoteLog (logs, version, downloads), RemoteControl (sync), MainActivity / FilesSection (firmware, G-code).' },
+  { id: 'g-remote', title: 'Remote-control API', desc: 'Drives the tablet from a browser or script. Every write becomes a command the app executes (see Remote commands below).' },
+  { id: 'g-admin', title: 'Dashboard (admin)', desc: 'Read what the app uploaded. Used by this console.' },
+];
+
+const EPS = [
+  /* ------------------------------------------------------------------ app */
+  { g: 'g-app', id: 'ingest', m: 'POST', p: '/api/ingest', auth: 'key', app: 'RemoteLog.loop()',
+    sum: 'Upload a batch of app log lines. Also registers or updates the device in the Devices list.',
+    body: [
+      ['device', 'object', 'Device identity (same object in every app request)'],
+      ['device.id', 'string', 'Required. <code>Settings.Secure.ANDROID_ID</code>'],
+      ['device.model / manufacturer', 'string', '<code>Build.MODEL</code>, <code>Build.MANUFACTURER</code>'],
+      ['device.android / sdk', 'string / int', 'Android release and API level'],
+      ['device.appVersion / appCode', 'string / int', 'versionName and versionCode of the APK'],
+      ['logs[]', 'array', 'Up to 2000 used per request (the app sends ≤ 500)'],
+      ['logs[].ts', 'ms', 'When the line was logged on the tablet'],
+      ['logs[].level', 'V|D|I|W|E', 'First character is kept'],
+      ['logs[].tag', 'string', '≤ 40 chars: <code>app</code>, <code>console</code>, <code>run</code>, <code>usb</code>, <code>file</code>, <code>remote</code>, <code>service</code> …'],
+      ['logs[].msg', 'string', '≤ 20000 chars; stack traces are appended to the message'],
+    ],
+    req: { device: { id: 'd32a9d4e774bb151', model: 'U320', manufacturer: 'YUMKEM', android: '13', sdk: 33, appVersion: '1.26', appCode: 27 },
+      logs: [{ ts: 1790997363511, level: 'I', tag: 'console', msg: 'Run finished: 6191 lines, 0 errors, 4:06:04' }] },
+    res: { ok: true, stored: 1, latestVersionCode: 27 },
+    resF: [['stored', 'int', 'Lines stored'], ['latestVersionCode', 'int', 'Newest published build; the app runs its update check when this is higher than its own']],
+    err: [['400', 'bad json / device.id required'], ['401', 'bad key']],
+    notes: 'Stored lines are pushed live to the console over <a href="#stream">/api/stream</a>. The server keeps the newest 200 000 rows.' },
+
+  { g: 'g-app', id: 'sync', m: 'POST', p: '/api/device/sync', auth: 'key', app: 'RemoteControl.loop()',
+    sum: 'The tablet’s remote-control loop. One request carries the live status, new console lines, results of finished commands and unsynced job events. The reply carries commands queued for this tablet. With <code>wait</code> > 0 and nothing queued, the server holds the request (long-poll) until a command arrives or <code>wait</code> ms pass.',
+    body: [
+      ['device', 'object', 'Same identity object as <a href="#ingest">ingest</a>; <code>device.id</code> required'],
+      ['status', 'object', 'See <a href="#status-object">The status object</a>'],
+      ['console[]', 'array', 'New CNC console lines since the last sync (≤ 300 from the app, ≤ 500 used)'],
+      ['console[].ts / src / text', 'ms / string / string', '<code>src</code> is <code>CNC</code>; <code>text</code> starts with <code>&gt;&gt; </code> (sent), <code>&lt;&lt; </code> (received) or is an app message'],
+      ['results[]', 'array', 'Outcome of commands executed since the last sync'],
+      ['results[].id / ok / msg', 'string / bool / string', 'Command id, success, human-readable result'],
+      ['jobEvents[]', 'array', '≤ 100 unsynced events, see <a href="#job-events">Job-log events</a>'],
+      ['wait', 'ms', '0–20000. The app sends 1500, or 0 when it is reporting results'],
+    ],
+    req: { device: { id: 'd32a9d4e774bb151', model: 'U320', appVersion: '1.26', appCode: 27 },
+      status: { connected: true, board: 'bluepill', machine: 'Idle', wpos: [0, 0, 5], streaming: false, remoteControl: true, app: '1.26' },
+      console: [{ ts: 1790997505747, src: 'CNC', text: '<< ok' }],
+      results: [{ id: '5b0c…', ok: true, msg: '$X sent' }], jobEvents: [], wait: 1500 },
+    res: { ok: true, commands: [{ id: '9f3e2c1a-…', cmd: 'load', file: 'part.nc', age: 412 }], jobEventsStored: 0, serverTime: 1790997600000 },
+    resF: [
+      ['commands[]', 'array', 'Commands for this tablet, oldest first. Their state becomes <code>sent</code>'],
+      ['commands[].id / cmd', 'string', 'Command id to report back in <code>results</code>; command name'],
+      ['commands[].file / line / axes', 'string', 'Arguments, only when given'],
+      ['commands[].age', 'ms', 'Time since the command was queued (the app refuses > 20 000)'],
+      ['jobEventsStored', 'int', 'Events received (re-sent uids are ignored)'],
+      ['serverTime', 'ms', 'Server clock'],
+    ],
+    err: [['400', 'bad json / device.id required'], ['401', 'bad key']],
+    notes: 'A tablet counts as <b>online</b> while it synced within the last 10 s. A newer sync from the same tablet releases an older waiting one. If the tablet drops the connection before the reply, its commands go back to the queue.' },
+
+  { g: 'g-app', id: 'version', m: 'GET', p: '/api/version', auth: 'public', app: 'RemoteLog.checkVersion(), Settings → App update, server Test',
+    sum: 'Newest published APK. If its <code>versionCode</code> is higher than the installed build, the app offers the update.',
+    res: { versionCode: 27, versionName: '1.26', file: 'GrblSender-v1.26-27.apk', size: 1110013, published: 1791001853383, notes: '1.26: redesigned UI …', url: '/apk/GrblSender-v1.26-27.apk' },
+    resF: [['versionCode / versionName', 'int / string', 'Build number and version label'], ['file / url', 'string', 'APK file name and its download path'], ['size', 'bytes', ''], ['published', 'ms', ''], ['notes', 'string', 'Release notes from <code>publish-apk.sh</code>']],
+    notes: 'With no release published the answer is <code>{"versionCode": 0}</code>.' },
+
+  { g: 'g-app', id: 'apk', m: 'GET', p: '/apk/latest.apk', auth: 'public', app: 'Update dialog → opens in the browser',
+    sum: 'Download the newest APK (<code>application/vnd.android.package-archive</code>, as an attachment). <code>/apk/&lt;file&gt;.apk</code> downloads a specific release.',
+    curl: `curl -OJ ${O}/apk/latest.apk`, err: [['404', 'no release']] },
+
+  { g: 'g-app', id: 'releases', m: 'GET', p: '/api/releases', auth: 'public', app: 'Settings → App update (history list)',
+    sum: 'Every published release, newest first: an array of the objects <a href="#version">/api/version</a> returns, without <code>url</code>. Download one from <code>/apk/{file}</code>.' },
+
+  { g: 'g-app', id: 'firmware', m: 'GET', p: '/api/firmware', auth: 'public', app: 'Settings → Firmware, Settings → General (newest build for the board)',
+    sum: 'Firmware catalogue, newest first. The app lists only entries whose <code>target</code> matches the selected board, downloads <code>url</code> and refuses a file whose SHA-256 does not match.',
+    res: [{ file: 'grbl-1.1h-promini-8mhz-38400-d13spindle.hex', name: 'Grbl 1.1h · Pro Mini 8 MHz · 38400 baud · D13 spindle enable', version: '1.1h-d13', notes: '…', size: 29690, sha256: '01124287…', mcu: 'atmega328p', clockHz: 8000000, baud: 38400, published: 1790892413644, target: 'promini', format: 'hex', address: '0x0000', url: '/firmware/grbl-1.1h-promini-8mhz-38400-d13spindle.hex' }],
+    resF: [
+      ['target', 'promini | bluepill | bluepill-128k', 'Board the build is for (hidden targets are never offered)'],
+      ['format / address', 'hex | bin / string', '<code>hex</code>: flashed with STK500v1 at 57600 baud (Pro Mini). <code>bin</code>: USB DFU at <code>address</code> (Blue Pill, 0x08002000)'],
+      ['sha256', 'hex string', 'Checked after download'],
+      ['mcu / clockHz / baud', '', 'Shown in the firmware profile'],
+    ] },
+
+  { g: 'g-app', id: 'firmware-file', m: 'GET', p: '/firmware/{file}', auth: 'public', app: 'Settings → Firmware → Flash',
+    sum: 'Download a firmware image (<code>.hex</code> or <code>.bin</code>) named in the catalogue.', curl: `curl -O ${O}/firmware/grbl-1.1h-promini-8mhz-38400-d13spindle.hex`, err: [['404', 'not found']] },
+
+  { g: 'g-app', id: 'gcode', m: 'GET', p: '/api/gcode', auth: 'public', app: 'Settings → Files (Backoffice list)',
+    sum: 'NC files on the backoffice (<code>.nc .gcode .ngc .tap</code>), sorted by name.',
+    res: [{ name: 'dome_parts_30mm_8mm_F2000.nc', size: 241338, modified: 1790880000000, title: 'Plywood hex dome parts - 26 parts, 182 …', preview: 'dome_parts_preview.png' }],
+    resF: [['title', 'string', 'First header comment mentioning “parts” or “circle”, else empty'], ['preview', 'string|null', 'Matching <code>*_preview.png</code>, fetch it from <code>/gcode/{preview}</code>'], ['modified', 'ms', 'File mtime']] },
+
+  { g: 'g-app', id: 'gcode-file', m: 'GET', p: '/gcode/{name}', auth: 'public', app: 'Files → Open, remote load/run with file',
+    sum: 'Download an NC file (attachment) or a preview PNG (inline). The app saves the file to <code>Documents/GrblSender</code> and opens it. <code>/gcode/</code> on its own is a plain HTML list for the tablet’s browser.',
+    curl: `curl -O "${O}/gcode/part.nc"`, err: [['404', 'not found']] },
+
+  { g: 'g-app', id: 'health', m: 'GET', p: '/health', auth: 'public', app: 'Settings → General → Test',
+    sum: 'Liveness check. The app’s Test button calls it and <a href="#version">/api/version</a> on the typed URL before switching servers.', res: { ok: true } },
+
+  /* ------------------------------------------------------------------ remote control */
+  { g: 'g-remote', id: 'cnc', m: 'GET', p: '/api/cnc', auth: 'api',
+    sum: 'Every tablet that has synced since the server started, most recently seen first.',
+    res: [{ device: 'd32a9d4e774bb151', model: 'YUMKEM U320', app: '1.26', online: true, lastSeen: 1790997600000, status: { machine: 'Idle', '…': '…' } }],
+    curl: `curl ${BEAR} ${O}/api/cnc` },
+
+  { g: 'g-remote', id: 'cnc-status', m: 'GET', p: '/api/cnc/status', auth: 'api',
+    sum: 'One tablet: same object as an <a href="#cnc">/api/cnc</a> entry, with the full <a href="#status-object">status</a>.',
+    params: [['device', 'string', 'Optional tablet id. Default: the tablet that synced last']],
+    curl: `curl ${BEAR} ${O}/api/cnc/status`, err: [['404', 'no tablet has connected yet']] },
+
+  { g: 'g-remote', id: 'cnc-console', m: 'GET', p: '/api/cnc/console', auth: 'api',
+    sum: 'The tablet’s CNC console as the server received it (in memory, newest 1000 lines). Poll with <code>after</code> = the last <code>seq</code> you saw.',
+    params: [['device', 'string', 'Optional, as above'], ['after', 'int', 'Return lines with <code>seq</code> greater than this'], ['limit', 'int', 'Default 300, max 1000 (the newest are kept)']],
+    res: { device: 'd32a9d4e774bb151', lines: [{ seq: 812, ts: 1790997505747, src: 'CNC', text: '>> $X' }, { seq: 813, ts: 1790997505790, src: 'CNC', text: '<< ok' }] },
+    curl: `curl ${BEAR} "${O}/api/cnc/console?after=0&limit=50"` },
+
+  { g: 'g-remote', id: 'cnc-command', m: 'POST', p: '/api/cnc/command', auth: 'api',
+    sum: 'Queue a command for a tablet. Answers <code>202</code> with the command record. With <code>"wait": true</code> the server waits up to 15 s for the tablet’s result before answering.',
+    body: [
+      ['cmd', 'string', 'Required: <code>run</code> <code>load</code> <code>hold</code> <code>resume</code> <code>stop</code> <code>reset</code> <code>unlock</code> <code>home</code> <code>zero</code> <code>send</code> <code>status</code>. See <a href="#commands">Remote commands</a>'],
+      ['device', 'string', 'Optional tablet id, default the last one seen'],
+      ['file', 'string', '<code>load</code> / <code>run</code>: NC file on the backoffice to download and open first'],
+      ['line', 'string', '<code>send</code>: one G-code line or <code>$</code> command (≤ 200 chars)'],
+      ['axes', 'string', '<code>zero</code>: any of <code>X</code> <code>Y</code> <code>Z</code>, default <code>XY</code>'],
+      ['wait', 'bool', 'Wait for the result (≤ 15 s)'],
+    ],
+    req: { cmd: 'load', file: 'part.nc', wait: true },
+    res: { id: '9f3e2c1a-…', device: 'd32a9d4e774bb151', cmd: 'load', args: { file: 'part.nc' }, state: 'done', created: 1790997600000, sent: 1790997600120, done: 1790997601900, ok: true, result: 'loaded part.nc: 6191 lines, est. 7:34:10' },
+    resF: [['state', 'queued | sent | done | failed | expired', '<code>expired</code>: not collected by the tablet within 30 s'], ['ok / result', 'bool / string', 'Filled when the tablet reported back'], ['created / sent / done', 'ms', '']],
+    err: [['400', 'bad json / cmd must be one of …'], ['403', 'remote control is switched off on the tablet (control commands only)'], ['404', 'no tablet has connected yet'], ['409', 'the tablet is offline (no sync for 10 s)']],
+    curl: `curl ${BEAR} -d '{"cmd":"hold","wait":true}' ${O}/api/cnc/command` },
+
+  { g: 'g-remote', id: 'cnc-command-get', m: 'GET', p: '/api/cnc/command?id={id}', auth: 'api',
+    sum: 'Look up a command record (kept for 1 h). Poll it when you queued without <code>wait</code>.',
+    curl: `curl ${BEAR} "${O}/api/cnc/command?id=9f3e2c1a-…"`, err: [['404', 'unknown command id']] },
+
+  { g: 'g-remote', id: 'jobs', m: 'GET', p: '/api/jobs', auth: 'api',
+    sum: 'Job log built from the tablets’ <a href="#job-events">job events</a>, newest first.',
+    params: [['device', 'string', 'Optional tablet id'], ['limit', 'int', 'Default 50, max 500']],
+    res: [{ id: 'c1d2…', device_id: 'd32a9d4e774bb151', file: 'dome_parts_30mm_8mm_F2000.nc', lines: 6191, est_sec: 27250, source: 'tablet', started: 1790982599000, ended: 1790997363000, result: 'completed', last_line: 6191, errors: 0, paused_ms: 561000 }],
+    resF: [['source', 'tablet | backoffice', 'Where Run was pressed'], ['result', 'completed | stopped | aborted | disconnected', 'null while running'], ['paused_ms', 'ms', 'Total time in feed hold']],
+    curl: `curl ${BEAR} "${O}/api/jobs?limit=5"` },
+
+  { g: 'g-remote', id: 'job', m: 'GET', p: '/api/jobs/{id}', auth: 'api',
+    sum: 'One job and its events (<code>events[]</code>: <code>ts</code>, <code>event</code>, <code>line</code>, <code>detail</code>).', err: [['404', 'unknown job']] },
+
+  { g: 'g-remote', id: 'upload', m: 'POST', p: '/api/gcode/upload?name={name}', auth: 'api',
+    sum: 'Store the raw request body (≤ 50 MB) as an NC file, so the tablet can list it or a <code>load</code>/<code>run</code> command can fetch it. An existing file with the same name is replaced.',
+    params: [['name', 'string', 'File name ending in <code>.nc</code> <code>.gcode</code> <code>.ngc</code> <code>.tap</code>; letters, digits, <code>_ . - ( )</code> and spaces']],
+    res: { ok: true, name: 'part.nc', size: 241338 },
+    curl: `curl ${BEAR} --data-binary @part.nc "${O}/api/gcode/upload?name=part.nc"`, err: [['400', 'name must end in .nc, .gcode, .ngc or .tap']] },
+
+  { g: 'g-remote', id: 'delete', m: 'DELETE', p: '/api/gcode/{name}', auth: 'api',
+    sum: 'Delete an NC file and its <code>_preview.png</code>.', res: { ok: true, deleted: 'part.nc' },
+    curl: `curl ${BEAR} -X DELETE "${O}/api/gcode/part.nc"`, err: [['400', 'not a G-code file'], ['404', 'no such file']] },
+
+  /* ------------------------------------------------------------------ admin */
+  { g: 'g-admin', id: 'devices', m: 'GET', p: '/api/devices', auth: 'admin',
+    sum: 'Every device that has uploaded logs, with its last identity and <code>log_count</code>.',
+    res: [{ id: 'd32a9d4e774bb151', model: 'U320', manufacturer: 'YUMKEM', android: '13', sdk: 33, app_version: '1.26', app_code: 27, ip: '1.2.3.4', first_seen: 1790800000000, last_seen: 1790997600000, log_count: 2403 }] },
+
+  { g: 'g-admin', id: 'logs', m: 'GET', p: '/api/logs', auth: 'admin',
+    sum: 'Stored app log lines. Without <code>after</code>: the newest <code>limit</code> lines in ascending order. With <code>after</code>: lines after that id.',
+    params: [['device', 'string', 'Filter by device id'], ['after / before', 'int', 'Row id bounds'], ['q', 'string', 'Substring of msg or tag'], ['levels', 'string', 'Any of <code>VDIWE</code>, e.g. <code>WE</code>'], ['limit', 'int', 'Default 500, max 5000']],
+    res: [{ id: 2398, device_id: 'd32a9d4e774bb151', ts: 1790997363511, level: 'I', tag: 'console', msg: 'Run finished: 6191 lines, 0 errors, 4:06:04' }],
+    curl: `curl "${O}/api/logs?levels=WE&limit=20"` },
+
+  { g: 'g-admin', id: 'logs-delete', m: 'DELETE', p: '/api/logs', auth: 'admin',
+    sum: 'Delete stored logs: all of them, or one device’s with <code>?device=</code>.', res: { deleted: 2403 } },
+
+  { g: 'g-admin', id: 'stream', m: 'GET', p: '/api/stream', auth: 'admin',
+    sum: 'Server-sent events: every batch stored by <a href="#ingest">/api/ingest</a> arrives as <code>data: [ …log rows… ]</code>. A <code>: ping</code> comment every 25 s keeps the connection open.',
+    curl: `curl -N ${O}/api/stream` },
+];
+
+/* commands the APK accepts (MainActivity.remoteExecute) */
+const CMDS = [
+  ['status', '—', 'yes', 'no', 'yes', 'Replies with the link summary (backoffice, remote switch, USB/board, Grbl state). Changes nothing.'],
+  ['hold', '—', 'yes', 'yes', 'yes', 'Feed hold <code>!</code>. Result: <i>feed hold sent at line N / M</i>.'],
+  ['stop', '—', 'yes', 'yes', 'yes', 'Running job: stop streaming + soft reset; the job ends as <code>stopped</code> (unlock with <code>$X</code> afterwards). No job: soft reset.'],
+  ['resume', '—', 'no', 'yes', 'yes', 'Cycle start <code>~</code>.'],
+  ['reset', '—', 'no', 'yes', 'yes', 'Soft reset (Ctrl-X). Ends a running job as <code>stopped</code>.'],
+  ['send', '<code>line</code>', 'no', 'yes', '<code>!</code> <code>~</code> <code>?</code> only', 'Queues one line, upper-cased, e.g. <code>G0 X0 Y0</code>, <code>$$</code>. The reply appears in the console.'],
+  ['unlock', '—', 'no', 'yes', 'no', '<code>$X</code>'],
+  ['home', '—', 'no', 'yes', 'no', '<code>$H</code>'],
+  ['zero', '<code>axes</code>', 'no', 'yes', 'no', '<code>G10L20P1X0Y0…</code>: sets the work zero for the given axes at the current position.'],
+  ['load', '<code>file</code>?', 'no', 'no', 'no', 'With <code>file</code>: download it from <a href="#gcode-file">/gcode/</a>, save it to Documents/GrblSender and open it (refused when the editor has unsaved changes). Then parse it like the Load button. Result: <i>loaded name: N lines, est. h:mm:ss</i>.'],
+  ['run', '<code>file</code>?', 'no', 'yes', 'no', 'As <code>load</code>, then start the job (<code>source = backoffice</code>). Refused in ALARM: unlock or home first.'],
+];
+
+const STATUS = [
+  ['connected', 'bool', 'USB link to the controller is open'],
+  ['usb', 'string|null', 'USB driver and VID:PID, e.g. <code>Ch34x (1A86:7523)</code>, <code>CdcAcm (0483:5740)</code>'],
+  ['board / boardName', 'string', '<code>promini</code> | <code>bluepill</code> and its display name (Settings → General)'],
+  ['machine', 'string', 'Grbl state from the last <code>?</code> report: <code>Idle</code> <code>Run</code> <code>Hold:0</code> <code>Jog</code> <code>Alarm</code> <code>Door</code> <code>Home</code> …; empty when unknown'],
+  ['wpos / mpos', '[x, y, z]', 'Work and machine position, mm'],
+  ['streaming / paused', 'bool', 'A job is running / is in feed hold'],
+  ['file / dirty', 'string|null / bool', 'Document open in the editor; unsaved edits'],
+  ['loaded', 'bool', 'A program has been parsed (Load)'],
+  ['lines / acked', 'int', 'Program lines; lines Grbl has acknowledged'],
+  ['permille', '0–1000', 'Job progress'],
+  ['elapsedSec / estSec / etaSec', 's', 'Run time so far; estimate for the whole program; remaining time (only while streaming)'],
+  ['errors', 'int', 'Grbl <code>error:</code> replies in this run'],
+  ['jobId', 'string|null', 'Current job’s id in the <a href="#job-events">job log</a>'],
+  ['fw', 'string|null', 'Grbl version from the <code>[VER:…]</code> line of <code>$I</code>'],
+  ['remoteControl', 'bool', 'Remote control switch on the tablet'],
+  ['app', 'string', 'App versionName'],
+  ['at', 'ms', 'Added by the server: when this status arrived'],
+];
+
+const EVENTS = [
+  ['uid', 'string', 'Unique event id (UUID): the server ignores duplicates'],
+  ['job', 'object', '<code>{id, file, lines, estSec, source}</code>; <code>source</code> = <code>tablet</code> | <code>backoffice</code>'],
+  ['event', 'string', '<code>started</code> · <code>paused</code> · <code>resumed</code> · <code>ended</code>'],
+  ['ts / line', 'ms / int', 'When, and the program line reached'],
+  ['detail', 'string|null', 'e.g. <i>started from the backoffice</i>, the hold reason, <i>after 8:42</i>, <i>completed</i>'],
+  ['result / errors / pausedMs', '', 'Only on <code>ended</code>: <code>completed</code> | <code>stopped</code> | <code>aborted</code> | <code>disconnected</code>, error count, total hold time'],
+];
+
+/* ---------------------------------------------------------------- rendering */
+function hl(json) {
+  return esc(json).replace(/(&quot;(?:[^&]|&(?!quot;))*?&quot;)(\s*:)?|\b(-?\d+(?:\.\d+)?)\b|\b(true|false|null)\b/g,
+    (m, s, colon, n, k) => s ? (colon ? `<span class="k">${s}</span>${colon}` : `<span class="s">${s}</span>`) : n ? `<span class="n">${n}</span>` : `<span class="k">${k}</span>`);
+}
+const J = (o) => JSON.stringify(o, null, 2);
+const rows = (list, head) => `<div class="tw"><table><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr>${list.map((r) =>
+  `<tr><td><code>${esc(r[0])}</code></td><td class="t">${esc(r[1])}</td><td>${r[2]}</td></tr>`).join('')}</table></div>`;
+let blockN = 0;
+const block = (label, text, isJson) => `<div class="code"><div class="lbl">${label}<button class="cp" data-c="b${++blockN}">COPY</button></div><pre id="b${blockN}">${isJson ? hl(text) : esc(text)}</pre></div>`;
+
+function curlFor(e) {
+  if (e.curl) return e.curl;
+  const auth = e.auth === 'key' ? KEYH + ' ' : e.auth === 'api' ? BEAR + ' ' : '';
+  if (e.m === 'POST' && e.req) return `curl ${auth}-H "Content-Type: application/json" \\\n  -d '${JSON.stringify(e.req)}' \\\n  ${O}${e.p}`;
+  return `curl ${auth}${O}${e.p}`;
+}
+
+function epHtml(e) {
+  const exs = [];
+  if (e.req) exs.push(block('Request body', J(e.req), true));
+  if (e.res) exs.push(block('Response' + (e.m === 'POST' && e.g === 'g-remote' ? ' · 202' : ' · 200'), J(e.res), true));
+  return `<article class="ep" id="${e.id}" data-s="${esc((e.m + ' ' + e.p + ' ' + e.sum + ' ' + (e.app || '')).toLowerCase())}">
+    <div class="hd"><span class="badge ${e.m}">${e.m}</span><span class="path">${esc(e.p)}</span><span class="spacer"></span>
+      ${e.app ? `<span class="chip app" title="Where the APK calls it">app · ${esc(e.app)}</span>` : ''}${AUTH[e.auth]}</div>
+    <div class="bd">
+      <p>${e.sum}</p>
+      ${e.params ? '<h3>Query parameters</h3>' + rows(e.params, ['Name', 'Type', 'Description']) : ''}
+      ${e.body ? '<h3>Request body</h3>' + rows(e.body, ['Field', 'Type', 'Description']) : ''}
+      ${e.resF ? '<h3>Response fields</h3>' + rows(e.resF, ['Field', 'Type', 'Description']) : ''}
+      ${e.err ? '<h3>Errors</h3>' + rows(e.err.map(([c, d]) => [c, '', esc(d)]), ['Status', '', 'Error']) : ''}
+      ${e.notes ? `<div class="note">${e.notes}</div>` : ''}
+      ${exs.length ? `<div class="ex">${exs.join('')}</div>` : ''}
+      ${block('curl', curlFor(e), false)}
+    </div></article>`;
+}
+
+$('#eps').innerHTML = GROUPS.map((g) => `<section class="grp-sec" data-g="${g.id}"><h2 class="sec" id="${g.id}">${g.title}</h2><p class="secd">${g.desc}</p>
+  ${EPS.filter((e) => e.g === g.id).map(epHtml).join('')}</section>`).join('');
+
+$('#cmdTable').innerHTML = `<tr><th>cmd</th><th>Args</th><th>Remote switch off</th><th>Needs USB link</th><th>While a job runs</th><th>What the app does</th></tr>` +
+  CMDS.map(([c, a, off, usb, job, d]) => `<tr><td><code>${c}</code></td><td>${a}</td><td>${off}</td><td>${usb}</td><td>${job}</td><td>${d}</td></tr>`).join('');
+$('#statusTable').innerHTML = `<tr><th>Field</th><th>Type</th><th>Meaning</th></tr>` +
+  STATUS.map(([f, t, d]) => `<tr><td><code>${f}</code></td><td class="t">${esc(t)}</td><td>${d}</td></tr>`).join('');
+$('#eventTable').innerHTML = `<tr><th>Field</th><th>Type</th><th>Meaning</th></tr>` +
+  EVENTS.map(([f, t, d]) => `<tr><td><code>${f}</code></td><td class="t">${esc(t)}</td><td>${d}</td></tr>`).join('');
+
+const TOC_TOP = [['overview', 'Overview'], ['auth', 'Authentication'], ['flows', 'How the app talks']];
+const TOC_END = [['commands', 'Remote commands'], ['status-object', 'Status object'], ['job-events', 'Job-log events']];
+$('#toc').innerHTML = `<div class="grp">Guide</div>${TOC_TOP.map(([id, t]) => `<a href="#${id}">${t}</a>`).join('')}` +
+  GROUPS.map((g) => `<div class="grp">${g.title}</div>` + EPS.filter((e) => e.g === g.id).map((e) =>
+    `<a href="#${e.id}" data-ep="${e.id}"><span class="m ${e.m}">${e.m}</span><code>${esc(e.p)}</code></a>`).join('')).join('') +
+  `<div class="grp">Reference</div>${TOC_END.map(([id, t]) => `<a href="#${id}">${t}</a>`).join('')}`;
+
+/* copy buttons */
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('.cp');
+  if (!b) return;
+  navigator.clipboard?.writeText($('#' + b.dataset.c).textContent).then(() => { b.textContent = 'COPIED'; setTimeout(() => (b.textContent = 'COPY'), 1200); });
+});
+
+/* filter */
+$('#q').addEventListener('input', () => {
+  const q = $('#q').value.trim().toLowerCase();
+  let hits = 0;
+  document.querySelectorAll('article.ep').forEach((a) => { const on = !q || a.dataset.s.includes(q); a.hidden = !on; hits += on; });
+  document.querySelectorAll('.grp-sec').forEach((s) => (s.hidden = !s.querySelector('article.ep:not([hidden])')));
+  document.querySelectorAll('#toc a[data-ep]').forEach((a) => (a.hidden = !!q && $('#' + a.dataset.ep).hidden));
+  $('#noHits').hidden = hits > 0;
+});
+addEventListener('keydown', (e) => { if (e.key === '/' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); } });
+
+/* mobile contents + highlight the section in view */
+$('#burger').onclick = () => document.body.classList.toggle('toc-open');
+$('#toc').addEventListener('click', (e) => { if (e.target.closest('a')) document.body.classList.remove('toc-open'); });
+const tocLinks = [...document.querySelectorAll('#toc a')];
+const io = new IntersectionObserver((ents) => {
+  for (const en of ents) if (en.isIntersecting) tocLinks.forEach((a) => a.classList.toggle('on', a.getAttribute('href') === '#' + en.target.id));
+}, { rootMargin: '-70px 0px -70% 0px' });
+document.querySelectorAll('article.ep, h2.sec[id], #overview').forEach((el) => io.observe(el));
+</script>
+</body>
+</html>

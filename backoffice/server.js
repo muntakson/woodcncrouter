@@ -402,6 +402,9 @@ async function handle(req, res) {
     return send(res, 200, { ...latest, url: `/apk/${latest.file}` });
   }
 
+  // Release history for Settings → App update (versions and notes only)
+  if (isGet && p === '/api/releases') return send(res, 200, listReleases());
+
   if (isGet && p === '/apk/latest.apk') {
     const latest = listReleases()[0];
     if (!latest) return send(res, 404, 'no release');
@@ -477,6 +480,7 @@ async function handle(req, res) {
   }
 
   if (req.method === 'GET' && (p === '/app' || p === '/app/')) return serveFile(res, path.join(PUBLIC_DIR, 'app.html'));
+  if (req.method === 'GET' && (p === '/app/api' || p === '/api/docs')) return serveFile(res, path.join(PUBLIC_DIR, 'api.html'));
 
   if (req.method === 'GET' && p === '/api/devices') {
     return send(res, 200, db.prepare(`
@@ -521,8 +525,6 @@ async function handle(req, res) {
     req.on('close', () => sseClients.delete(res));
     return;
   }
-
-  if (req.method === 'GET' && p === '/api/releases') return send(res, 200, listReleases());
 
   return send(res, 404, 'not found');
 }
