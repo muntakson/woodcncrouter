@@ -7,7 +7,7 @@ pins (see the PB12 note under limits).
 Sources: `grbl-stm32-classic/inc/cpu_map.h` (`ABC_AXIS_EXAMPLE` block, which `inc/config.h` selects, with
 `AA_AXIS` on), `grbl-stm32-classic/STM32F103-USBCNC-Pinout.png`, *MA860H-stepper-motor-driver.pdf* (control signal
 interface), *Inverter_Manual-MK300.pdf* (pages 28–36, P0-03, P4-13…P4-16), `spindle_setup.md`, the RichAuto
-breakout board (`RichAuto_IOboard_1B-A1X-10.png`, 50-pin connector pinout measured on the board).
+breakout board (`RichAuto_IOboard_1B-A1X-10.png`; 50-pin SCSI connector pinout in `richauto_pinout.md`).
 
 > **Pin map warning.** `README.md`, `firmware/bluepill/BUILD.md` and `spindle_setup.md` list the
 > `CPU_MAP_STM32F103` pins (step PA0–2, dir PA3–5, enable PA6, limits PB10–12, spindle PB13, probe PA15).
@@ -19,23 +19,23 @@ breakout board (`RichAuto_IOboard_1B-A1X-10.png`, 50-pin connector pinout measur
 
 | Function | Pin | Board edge (USB at top) | 5 V tolerant | Notes |
 |---|---|---|---|---|
-| X step | **PA0** | right | no | RichAuto pin 2 |
-| Y step | **PA1** | right | no | RichAuto pin 4 |
-| Z step | **PA2** | right | no | RichAuto pin 6 |
+| X step | **PA0** | right | no | RichAuto pin 3 |
+| Y step | **PA1** | right | no | RichAuto pin 7 |
+| Z step | **PA2** | right | no | RichAuto pin 11 |
 | A step | PA3 | right | no | 4th axis, unused on this machine |
-| X direction | **PA4** | right | no | RichAuto pin 3 |
-| Y direction | **PA5** | right | no | RichAuto pin 5 |
-| Z direction | **PA6** | right | no | RichAuto pin 7 |
+| X direction | **PA4** | right | no | RichAuto pin 5 |
+| Y direction | **PA5** | right | no | RichAuto pin 9 |
+| Z direction | **PA6** | right | no | RichAuto pin 13 |
 | A direction | PA7 | right | no | unused |
 | Stepper disable | PA15 | left | yes | HIGH = disabled with `$4=0`; not on the RichAuto connector, unused with `$1=255` |
 | X limit | **PB12** | left (1st pin) | yes | internal pull-up, switch to GND |
 | Y limit | **PB13** | left | yes | internal pull-up |
 | Z limit | **PB14** | left | yes | internal pull-up |
 | A limit | PB15 | left | yes | unused; `$5` bit 3 |
-| Spindle enable (MK300 X1) | **PB1** | right | no | HIGH on M3, LOW on M5 / reset / alarm; RichAuto pin 29 (Y1) |
+| Spindle enable (MK300 X1) | **PB1** | right | no | HIGH on M3, LOW on M5 / reset / alarm; RichAuto pin 44 (Y1) |
 | Spindle direction | PB0 | right | no | HIGH on M4 (not needed, the VFD runs forward only) |
 | Spindle PWM | PA8 | left | yes | TIM1 CH1, **10 kHz**, 0–3.3 V |
-| Coolant flood / mist | PB4 / PB3 | left | yes | M8 / M7, e.g. dust extractor relay; RichAuto pin 22 (Y2) / 28 (Y3) |
+| Coolant flood / mist | PB4 / PB3 | left | yes | M8 / M7, e.g. dust extractor relay; RichAuto pin 43 (Y2) / 46 (Y3) |
 | Reset / feed hold / cycle start | PB5 / PB6 / PB7 | left | PB5 no; PB6, PB7 yes | button to GND |
 | Safety door | PB8 | left | yes | switch to GND |
 | Probe | **PB9** | left | yes | touch plate to PB9, bit clip to GND |
@@ -52,23 +52,23 @@ Physical order, USB socket at the top:
   PB15  (A limit)                       NRST
   PA8   spindle PWM                     PB11
   PA9   —                               PB10
-  PA10  —                               PB1   spindle enable ──► RA 29 (Y1)
+  PA10  —                               PB1   spindle enable ──► RA 44 (Y1)
   PA11  USB D−                          PB0   (spindle dir)
   PA12  USB D+                          PA7   (A dir)
-  PA15  (stepper disable)               PA6   Z dir ──► RA 7
-  PB3   (mist) ──► RA 28 (Y3)           PA5   Y dir ──► RA 5
-  PB4   (flood) ──► RA 22 (Y2)          PA4   X dir ──► RA 3
+  PA15  (stepper disable)               PA6   Z dir ──► RA 13
+  PB3   (mist) ──► RA 46 (Y3)           PA5   Y dir ──► RA 9
+  PB4   (flood) ──► RA 43 (Y2)          PA4   X dir ──► RA 5
   PB5   reset button                    PA3   (A step)
-  PB6   feed hold button                PA2   Z step ──► RA 6
-  PB7   cycle start button              PA1   Y step ──► RA 4
-  PB8   door switch                     PA0   X step ──► RA 2
+  PB6   feed hold button                PA2   Z step ──► RA 11
+  PB7   cycle start button              PA1   Y step ──► RA 7
+  PB8   door switch                     PA0   X step ──► RA 3
   PB9   probe                           PC15
   5V    (USB 5 V, nothing else)         PC14
-  GND   ──► RA GND (26, 27, 30 …)       PC13  on-board LED
+  GND   ──► RA GND (2, 30, 34 …)        PC13  on-board LED
   3V3   ──► 1k/1k divider (1.6 V)       VBAT
 ```
 
-"RA n" = pin n of the RichAuto board's 50-pin connector (section 3).
+"RA n" = pin n of the RichAuto board's 50-pin SCSI connector (section 3).
 
 All inputs use the STM32's internal pull-up (~40 kΩ), so every switch closes to GND. All outputs are
 3.3 V push-pull. Keep the load to ~8 mA per pin (20 mA absolute) and 150 mA for the whole chip.
@@ -103,30 +103,63 @@ on-board step-down converter. Its 50-pin controller connector carries:
 - **Outputs Y1–Y8** as inputs of a ULN2803 (open-collector, sinks to board GND).
 - **Inputs X1–X8** serialized by an HVS885 and sent as differential CLK / LD / SOP. Grbl can't read that.
 
-#### 50-pin connector
+#### 50-pin SCSI connector
 
 | Pin | Signal | Blue Pill |
 |---|---|---|
-| 2 / 49 | X pulse + / − | **PA0** → 2, divider → 49 |
-| 3 / 48 | X dir + / − | **PA4** → 3, divider → 48 |
-| 4 / 47 | Y pulse + / − | **PA1** → 4, divider → 47 |
-| 5 / 46 | Y dir + / − | **PA5** → 5, divider → 46 |
-| 6 / 45 | Z pulse + / − | **PA2** → 6, divider → 45 |
-| 7 / 44 | Z dir + / − | **PA6** → 7, divider → 44 |
-| 8 / 43 | C pulse + / − | (PA3, A step, unused) |
-| 9 / 42 | C dir + / − | (PA7, A dir, unused) |
-| 13 / 38 | HVS885 CLK − / + | not used |
-| 14 / 35 | HVS885 LD + / − | not used |
-| 15 / 33 | HVS885 SOP − / + | not used |
-| 29 | Y1 (ULN2803 input) | e.g. **PB1** spindle enable, see below |
-| 22 | Y2 | e.g. PB4 flood (dust extractor) |
-| 28 | Y3 | e.g. PB3 mist |
-| 23, 24, 25, 19, 32 | Y4, Y5, Y6, Y7, Y8 | free |
+| 3 / 4 | X pulse + / − | **PA0** → 3, divider → 4 |
+| 5 / 6 | X dir + / − | **PA4** → 5, divider → 6 |
+| 7 / 8 | Y pulse + / − | **PA1** → 7, divider → 8 |
+| 9 / 10 | Y dir + / − | **PA5** → 9, divider → 10 |
+| 11 / 12 | Z pulse + / − | **PA2** → 11, divider → 12 |
+| 13 / 14 | Z dir + / − | **PA6** → 13, divider → 14 |
+| 15 / 16 | C pulse + / − | (PA3, A step, unused) |
+| 17 / 18 | C dir + / − | (PA7, A dir, unused) |
+| 25 / 26 | HVS885 CLK − / + | not used |
+| 27 / 28 | HVS885 LD + / − | not used |
+| 35 / 36 | HVS885 SOP − / + | not used |
+| 44 | Y1 (ULN2803 input) | e.g. **PB1** spindle enable, see below |
+| 43 | Y2 | e.g. PB4 flood (dust extractor) |
+| 46 | Y3 | e.g. PB3 mist |
+| 45, 47, 49, 37, 38 | Y4, Y5, Y6, Y7, Y8 | free |
 | 1 | 5 V out (board supply) | **don't connect** to the Blue Pill 5V pin |
-| 26, 27, 30, 31, 34, 36, 50 | GND | Blue Pill **GND** (at least two pins) |
+| 2, 30, 34, 40, 42, 48, 50 | GND | Blue Pill **GND** (at least two pins) |
 
-The pin list as given marks 45, 44 and 43 as "+" and 42 as "C pulse −". By the pattern of the rest these are
-Z pulse −, Z dir −, C pulse − and C dir −. Check with a meter before wiring.
+It is a 50-pin SCSI connector; every differential pair sits side by side on an odd/even pin pair. Full pinout: `richauto_pinout.md`.
+
+Connector seen from the Blue Pill side (odd pins left, even pins right; unmarked pins stay open):
+
+```
+                         -------
+     (leave open) 5V out | 1| 2| GND ◄── Blue Pill GND
+         PA0 ──► Xpulse+ | 3| 4| Xpulse- ◄── 1.6 V divider
+           PA4 ──► Xdir+ | 5| 6| Xdir- ◄── 1.6 V divider
+         PA1 ──► Ypulse+ | 7| 8| Ypulse- ◄── 1.6 V divider
+           PA5 ──► Ydir+ | 9|10| Ydir- ◄── 1.6 V divider
+         PA2 ──► Zpulse+ |11|12| Zpulse- ◄── 1.6 V divider
+           PA6 ──► Zdir+ |13|14| Zdir- ◄── 1.6 V divider
+                 Cpulse+ |15|16| Cpulse-
+                   Cdir+ |17|18| Cdir-
+                       — |19|20| —
+                       — |21|22| —
+                       — |23|24| —
+                    CLK- |25|26| CLK+
+                     LD+ |27|28| LD-
+                       — |29|30| GND
+                       — |31|32| —
+                       — |33|34| GND
+                    SOP- |35|36| SOP+
+                      Y7 |37|38| Y8
+                       — |39|40| GND
+                       — |41|42| GND
+        PB4 flood ──► Y2 |43|44| Y1 ◄── PB1 spindle
+                      Y4 |45|46| Y3 ◄── PB3 mist
+                      Y5 |47|48| GND
+                      Y6 |49|50| GND
+                         -------
+```
+
+Tie the divider pins 4, 6, 8, 10, 12, 14 together to the 1k/1k midpoint. Use at least two of the GND pins.
 
 #### Step and dir: + pin from the Blue Pill, − pin at 1.6 V
 
@@ -139,12 +172,12 @@ The Blue Pill gives a single-ended 0 / 3.3 V signal. Wire it to the **+** pin, a
                       │
                      1k
                       │
-Blue Pill PA0 ────────┼─────────────► pin 2  (X pulse +)
+Blue Pill PA0 ────────┼─────────────► pin 3 (X pulse +)    (PA4 → 5, PA1 → 7, PA5 → 9, PA2 → 11, PA6 → 13)
                       │
-             ~1.6 V ──┴─────────────► pin 49 (X pulse −), and 48, 47, 46, 45, 44
+             ~1.6 V ──┴─────────────► pin 4 (X pulse −), and 6, 8, 10, 12, 14
                      1k
                       │
-Blue Pill GND ───────GND────────────► pins 26, 27, 30 … (board GND, must be shared)
+Blue Pill GND ───────GND────────────► pins 2, 30, 34 … (board GND, must be shared)
 ```
 
 - PA0 at 0 V gives +/− difference −1.6 V (output LOW). At 3.3 V it gives +1.7 V (output HIGH). Both are far past
@@ -254,7 +287,7 @@ The ULN2803 on the RichAuto board sinks the PC817 LED current from the board's o
 
 ```
 RichAuto 5 V ──[330 Ω]──► PC817 pin 1 (anode)
-RichAuto Y1 terminal ───► PC817 pin 2 (cathode)      (Y1 = PB1 via connector pin 29, ULN2803)
+RichAuto Y1 terminal ───► PC817 pin 2 (cathode)      (Y1 = PB1 via connector pin 44, ULN2803)
 PC817 pin 4 (collector) ─► MK300 X1
 PC817 pin 3 (emitter)  ──► MK300 COM
 ```
@@ -354,7 +387,7 @@ Check `$$` before the first move.
 
 1. Blue Pill on USB only (no driver power, RichAuto board unplugged). `$$` answers, `?` shows `Idle` with no `Pn:` field.
 2. Short each limit pin to GND: `?` shows `Pn:X`, `Pn:Y`, `Pn:Z`. Probe to GND: `Pn:P`.
-3. Plug in the RichAuto board, 24 V on, driver power off. Meter: the divider reads about 1.6 V on pins 49/48/47/46/45/44.
+3. Plug in the RichAuto board, 24 V on, driver power off. Meter: the divider reads about 1.6 V on pins 4/6/8/10/12/14.
    `M3` → Y1 terminal near 0 V (on), `M5` → Y1 off. On a 26LS32 output (X pulse at the driver connector), note the
    idle level and how the driver's PUL+/PUL− are wired to it: idle level that lights the opto → step pulses are
    inverted, set `$2=7`.
