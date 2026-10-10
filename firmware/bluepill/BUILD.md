@@ -34,17 +34,27 @@ Flash layout: 0x08000000 bootloader (8 KB) · 0x08002000 firmware (55 KB max) ·
 
 ### Pin map (this port, not the grblHAL one)
 
+`inc/config.h` selects `ABC_AXIS_EXAMPLE` with `AA_AXIS` (X, Y, Z + A), so the pins come from that block
+of `inc/cpu_map.h`, **not** from `CPU_MAP_STM32F103` (which is commented out).
+
 | Function | Pin |
 |---|---|
-| X / Y / Z step | PA0 / PA1 / PA2 |
-| X / Y / Z direction | PA3 / PA4 / PA5 |
-| Stepper disable | PA6 |
-| Limits X / Y / Z | PB10 / PB11 / PB12 |
-| **Spindle enable (MK300 X1 via PC817)** | **PB13** (`USE_SPINDLE_ENABLE_PIN`: on with M3, off with M5/reset/alarm) |
-| Spindle direction / PWM | PB14 / PA8 |
-| Coolant flood / mist | PB3 / PB4 |
+| X / Y / Z / A step | PA0 / PA1 / PA2 / PA3 |
+| X / Y / Z / A direction | PA4 / PA5 / PA6 / PA7 |
+| Stepper disable | PA15 |
+| Limits X / Y / Z / A | PB12 / PB13 / PB14 / PB15 |
+| **Spindle enable (MK300 X1)** | **PB1** (on with M3, off with M5/reset/alarm) |
+| Spindle direction / PWM | PB0 / PA8 |
+| Coolant flood / mist | PB4 / PB3 |
 | Reset / feed hold / cycle start / door | PB5 / PB6 / PB7 / PB8 |
-| Probe | PA15 |
+| Probe | PB9 |
+
+### M150: wiring check (r4)
+
+`M150 P<s>` puts a 1 kHz, 50 % square wave on the X step pin (PA0) for `<s>` seconds (default 10,
+`P0` stops it), from TIM4 and without moving the machine (`src/diag.c`). It waits for queued motion,
+is refused in alarm or while jogging, and any new motion or a reset ends it. The app's
+Settings → Diagnosis → Xpulse uses it.
 
 All outputs are 3.3 V, like the Pro Mini. See the upstream `STM32F103-USBCNC-Pinout.png`.
 

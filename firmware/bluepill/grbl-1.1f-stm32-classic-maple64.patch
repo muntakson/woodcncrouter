@@ -42,6 +42,149 @@ index 0000000..3d786d5
 +	$(OBJCOPY) -O binary $< $@
 +clean:
 +	rm -rf $(BUILD)
+diff --git a/inc/diag.h b/inc/diag.h
+new file mode 100644
+index 0000000..bbc0c19
+--- /dev/null
++++ b/inc/diag.h
+@@ -0,0 +1,17 @@
++/*
++  diag.h - wiring diagnostics: a 1 kHz, 50 % square wave on the X step pin
++*/
++#ifndef diag_h
++#define diag_h
++
++// M150 P<s>: square wave on the X step pin for P seconds (default 10, P0 stops it)
++#define DIAG_MCODE_PULSE  150
++#define DIAG_PULSE_HZ     1000
++#define DIAG_DEFAULT_S    10
++
++// Handles "M150[P<s>]" lines; returns STATUS_OK or an error, or 0xFF when the line is not M150.
++uint8_t diag_execute_line(char *line);
++void diag_stop(void);
++uint8_t diag_active(void);
++
++#endif
+diff --git a/inc/grbl.h b/inc/grbl.h
+index dcd781e..cfa4ed1 100644
+--- a/inc/grbl.h
++++ b/inc/grbl.h
+@@ -107,6 +107,7 @@ typedef int bool;
+ #include "spindle_control.h"
+ #include "stepper.h"
+ #include "jog.h"
++#include "diag.h"
+ 
+ // ---------------------------------------------------------------------------------------
+ // COMPILE-TIME ERROR CHECKING OF DEFINE VALUES:
+diff --git a/src/diag.c b/src/diag.c
+new file mode 100644
+index 0000000..5b821c7
+--- /dev/null
++++ b/src/diag.c
+@@ -0,0 +1,102 @@
++/*
++  diag.c - wiring diagnostics: a 1 kHz, 50 % square wave on the X step pin
++
++  M150 P<s> toggles the X step pin from TIM4 (free in this port) for P seconds, without
++  the stepper code, so a scope sees a clean 1 kHz / 50 % wave and the pin itself is tested.
++  It waits for motion to finish first; any new motion (st_wake_up) or a reset stops it.
++*/
++#include "grbl.h"
++
++#ifdef STM32F103C8
++
++static volatile uint32_t diag_toggles_left;
++
++static void diag_pin_low(void)
++{
++  // idle level: low, or high when $2 inverts the X step pulse
++  if (settings.step_invert_mask & bit(X_AXIS)) STEP_PORT->ODR |= (1 << X_STEP_BIT);
++  else STEP_PORT->ODR &= ~(1 << X_STEP_BIT);
++}
++
++void diag_stop(void)
++{
++  TIM4->CR1 &= ~TIM_CR1_CEN;
++  TIM4->DIER &= ~TIM_DIER_UIE;
++  if (diag_toggles_left) {
++    diag_toggles_left = 0;
++    diag_pin_low();
++  }
++}
++
++uint8_t diag_active(void) { return diag_toggles_left != 0; }
++
++static void diag_start(uint32_t seconds)
++{
++  GPIO_InitTypeDef gpio;
++
++  diag_stop();
++  if (seconds == 0) return;
++
++  // make sure the pin really is a push-pull output
++  RCC_APB2PeriphClockCmd(RCC_STEP_PORT, ENABLE);
++  gpio.GPIO_Pin = 1 << X_STEP_BIT;
++  gpio.GPIO_Speed = GPIO_Speed_50MHz;
++  gpio.GPIO_Mode = GPIO_Mode_Out_PP;
++  GPIO_Init(STEP_PORT, &gpio);
++  diag_pin_low();
++
++  // TIM4 on APB1 runs at 72 MHz: 72 MHz / 72 = 1 MHz count, update every 500 us = 2 kHz toggles
++  RCC->APB1ENR |= RCC_APB1Periph_TIM4;
++  TIM4->CR1 = 0;
++  TIM4->PSC = (F_CPU / 1000000) - 1;
++  TIM4->ARR = (1000000 / (2 * DIAG_PULSE_HZ)) - 1;
++  TIM4->CNT = 0;
++  TIM4->EGR = TIM_EGR_UG;
++  TIM4->SR = ~TIM_SR_UIF;
++  diag_toggles_left = seconds * 2 * DIAG_PULSE_HZ;
++  NVIC_SetPriority(TIM4_IRQn, 2);   // below the stepper timers (0, 1)
++  NVIC_EnableIRQ(TIM4_IRQn);
++  TIM4->DIER |= TIM_DIER_UIE;
++  TIM4->CR1 |= TIM_CR1_CEN;
++}
++
++void TIM4_IRQHandler(void)
++{
++  TIM4->SR = ~TIM_SR_UIF;
++  if (diag_toggles_left == 0) { TIM4->CR1 &= ~TIM_CR1_CEN; return; }
++  STEP_PORT->ODR ^= (1 << X_STEP_BIT);
++  if (--diag_toggles_left == 0) {
++    TIM4->CR1 &= ~TIM_CR1_CEN;
++    diag_pin_low();
++  }
++}
++
++uint8_t diag_execute_line(char *line)
++{
++  uint8_t i = 1;
++  float value;
++  uint32_t seconds = DIAG_DEFAULT_S;
++
++  // protocol has already removed spaces and upper-cased the line
++  if (line[0] != 'M') return 0xFF;
++  if (!read_float(line, &i, &value) || value != DIAG_MCODE_PULSE) return 0xFF;
++  if (line[i] == 'P') {
++    i++;
++    if (!read_float(line, &i, &value) || value < 0 || value > 600) return STATUS_GCODE_VALUE_WORD_MISSING;
++    seconds = (uint32_t)value;
++  }
++  if (line[i] != 0) return STATUS_GCODE_UNSUPPORTED_COMMAND;
++  if (sys.state & (STATE_ALARM | STATE_JOG | STATE_CHECK_MODE)) return STATUS_SYSTEM_GC_LOCK;
++  protocol_buffer_synchronize();   // let queued motion finish: the stepper owns the pin while it runs
++  if (sys.abort) return STATUS_OK;
++  diag_start(seconds);
++  return STATUS_OK;
++}
++
++#else
++
++uint8_t diag_execute_line(char *line) { return 0xFF; }
++void diag_stop(void) { }
++uint8_t diag_active(void) { return 0; }
++
++#endif
 diff --git a/src/main.c b/src/main.c
 index 6db782b..7063e36 100644
 --- a/src/main.c
@@ -54,6 +197,22 @@ index 6db782b..7063e36 100644
  	Set_USBClock();
  	USB_Interrupts_Config();
  	USB_Init();
+diff --git a/src/protocol.c b/src/protocol.c
+index 070952a..6d9df4b 100644
+--- a/src/protocol.c
++++ b/src/protocol.c
+@@ -106,8 +106,9 @@ void protocol_main_loop()
+           // Everything else is gcode. Block if in alarm or jog mode.
+           report_status_message(STATUS_SYSTEM_GC_LOCK);
+         } else {
+-          // Parse and execute g-code block.
+-          report_status_message(gc_execute_line(line));
++          // Parse and execute g-code block (M150 is the wiring diagnostic, see diag.c).
++          uint8_t diag = diag_execute_line(line);
++          report_status_message(diag != 0xFF ? diag : gc_execute_line(line));
+         }
+ 
+         // Reset tracking data for next line.
 diff --git a/src/serial.c b/src/serial.c
 index b35e0de..af19f87 100644
 --- a/src/serial.c
@@ -72,6 +231,26 @@ index b35e0de..af19f87 100644
  volatile uint8_t serial_tx_buffer_tail = 0;
  
  
+diff --git a/src/stepper.c b/src/stepper.c
+index 81e577d..280a0ee 100644
+--- a/src/stepper.c
++++ b/src/stepper.c
+@@ -300,6 +300,7 @@ static st_prep_t prep;
+ // enabled. Startup init and limits call this function but shouldn't start the cycle.
+ void st_wake_up()
+ {
++  diag_stop();   // motion owns the step pins again
+ #ifdef  USE_RESET_BTN_AS_ESTOP
+ 	if(system_control_get_state() & CONTROL_PIN_INDEX_RESET) { // if reset button is pressed
+ 		mc_reset();
+@@ -804,6 +805,7 @@ void st_generate_step_dir_invert_masks()
+ // Reset and clear stepper subsystem variables
+ void st_reset()
+ {
++  diag_stop();
+   // Initialize stepper driver idle state.
+   st_go_idle();
+   // Initialize stepper algorithm variables.
 diff --git a/src/system_stm32f10x.c b/src/system_stm32f10x.c
 index 826dbcd..4aaf3d3 100644
 --- a/src/system_stm32f10x.c

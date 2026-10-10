@@ -9,7 +9,7 @@ Sources: `grbl-stm32-classic/inc/cpu_map.h` (`ABC_AXIS_EXAMPLE` block, which `in
 interface), *Inverter_Manual-MK300.pdf* (pages 28–36, P0-03, P4-13…P4-16), `spindle_setup.md`, the RichAuto
 breakout board (`RichAuto_IOboard_1B-A1X-10.png`; 50-pin SCSI connector pinout in `richauto_pinout.md`).
 
-> **Pin map warning.** `README.md`, `firmware/bluepill/BUILD.md` and `spindle_setup.md` list the
+> **Pin map warning.** `README.md` and `spindle_setup.md` list the
 > `CPU_MAP_STM32F103` pins (step PA0–2, dir PA3–5, enable PA6, limits PB10–12, spindle PB13, probe PA15).
 > **That map is not compiled in.** `config.h` defines `ABC_AXIS_EXAMPLE` and leaves `CPU_MAP_STM32F103`
 > commented out, so the flashed image uses the pins below. Wiring to the old table would put X direction
@@ -168,22 +168,44 @@ The Blue Pill gives a single-ended 0 / 3.3 V signal. Wire it to the **+** pin, a
 1.6 V from one shared divider:
 
 ```
-                     3V3
-                      │
-                     1k
-                      │
-Blue Pill PA0 ────────┼─────────────► pin 3 (X pulse +)    (PA4 → 5, PA1 → 7, PA5 → 9, PA2 → 11, PA6 → 13)
-                      │
-             ~1.6 V ──┴─────────────► pin 4 (X pulse −), and 6, 8, 10, 12, 14
-                     1k
-                      │
-Blue Pill GND ───────GND────────────► pins 2, 30, 34 … (board GND, must be shared)
+                    Blue Pill 3V3
+                         │
+                        ┌┴┐
+                        │ │ R1 1 kΩ
+                        └┬┘
+                         │ Vref ≈ 1.65 V
+        ┌────────┬───────┼───────┬───────┬───────┬───────┬────────┐
+        │        │       │       │       │       │       │        │
+       ┌┴┐       ▼       ▼       ▼       ▼       ▼       ▼     ═══╪═══ 100 nF (optional,
+ R2    │ │     pin 4   pin 6   pin 8  pin 10  pin 12  pin 14      │     steadies Vref)
+ 1 kΩ  └┬┘      X−     Xd−     Y−     Yd−     Z−      Zd−         │
+        │      (every "−" input of the six 26LS32 channels)        │
+       GND                                                       GND
+
+
+ Blue Pill pin          connector "+" pin                each "+" pin → its own channel
+ ─────────────          ─────────────────                ──────────────────────────────
+ PA0  X step  ────────► pin 3   X pulse +  ─┐            ┌──────────┐
+ PA4  X dir   ────────► pin 5   X dir   +   ├───────────►│ +  \     │
+ PA1  Y step  ────────► pin 7   Y pulse +   │            │     >────┼──► 5 V out ──► MA860H PUL− / DIR−
+ PA5  Y dir   ────────► pin 9   Y dir   +   │   Vref ───►│ −  /     │
+ PA2  Z step  ────────► pin 11  Z pulse +   │            └──────────┘
+ PA6  Z dir   ────────► pin 13  Z dir   +  ─┘
+
+ Blue Pill GND ───────► pins 2, 30, 34 …  (board GND, must be shared)
 ```
+
+| Blue Pill pin | + input | − input | + minus − | 26LS32 output |
+|---|---|---|---|---|
+| LOW (0 V) | 0 V | 1.65 V | −1.65 V | LOW |
+| HIGH (3.3 V) | 3.3 V | 1.65 V | +1.65 V | HIGH |
 
 - PA0 at 0 V gives +/− difference −1.6 V (output LOW). At 3.3 V it gives +1.7 V (output HIGH). Both are far past
   the ±0.2 V threshold and well inside the ±7 V common-mode range.
-- **Keep the divider at about 1 k / 1 k.** Each 26LS32 input is only about 12 kΩ, and six of them hang on the
-  divider. A 10 k divider would sag.
+- **Keep the divider at about 1 k / 1 k.** One divider is enough for all six − pins; see the load check below.
+  It draws about 1.65 mA from 3V3.
+- **100 nF from Vref to GND (optional).** Put it at the connector if the Vref wire is long (over 30 cm) or runs
+  near motor cables.
 - **Don't tie the − pins to GND.** With PA0 low, both inputs would sit at 0 V, inside the undefined zone, and the
   output could chatter.
 - If a pulse or direction comes out inverted on the driver side, fix it with `$2` (step invert) / `$3` (dir invert).
@@ -193,6 +215,34 @@ Blue Pill GND ───────GND────────────► pi
   Trace one channel before relying on it.
 - **Enable (PA15):** the connector has no enable line. Leave ENA+/ENA− on the drivers unconnected (drivers always
   enabled) and keep `$1=255`. PA15 stays unused.
+
+#### Load check: one 1k/1k divider for six − pins
+
+Figures are typical AM26LS32 datasheet values, not measured on this board.
+
+**Static load.** The divider is a 1.65 V source behind 500 Ω (1 k ∥ 1 k). Each 26LS32 input is roughly 6–12 kΩ
+to an internal bias of about 2–2.5 V, so six in parallel are about 1–2 kΩ. That pulls Vref a little up toward the
+internal bias:
+
+| Case | Six inputs in parallel | Vref | Margin, pin LOW | Margin, pin HIGH |
+|---|---|---|---|---|
+| Typical (12 kΩ each) | 2 kΩ | ≈ 1.8 V | −1.8 V | +1.5 V |
+| Worst (6 kΩ each) | 1 kΩ | ≈ 1.9 V | −1.9 V | +1.4 V |
+
+The threshold is ±0.2 V, so even the worst case has at least 7× margin.
+
+**Crosstalk.** The step/dir signals go to the + inputs, not to Vref. Inside the 26LS32 the + and − inputs of a
+channel are separate high-impedance inputs, so a switching step pin barely disturbs the shared Vref. The optional
+100 nF absorbs whatever does couple in (500 Ω × 100 nF = 50 µs, fine for a DC reference).
+
+**Boot.** While the Blue Pill pins float, each + input sits at its internal bias (about 2–2.5 V), above Vref, so
+the outputs sit steadily HIGH. No stray step pulses.
+
+**When it would not be OK.** A 10 k / 10 k divider is a 5 kΩ source into a 1–2 kΩ load: Vref drifts to about
+2.2 V or more, the HIGH margin shrinks to about 1 V, and noise couples in more easily.
+
+**Check on the board.** With everything connected and the board powered, measure Vref to GND. **1.5–2.0 V** is
+good. Above 2.1 V, change to 470 Ω / 470 Ω (about 3.5 mA).
 
 #### Outputs Y1–Y8 (ULN2803)
 
