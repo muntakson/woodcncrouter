@@ -16,6 +16,9 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
@@ -63,6 +66,8 @@ final class CameraStreamer {
     interface RotationSource { int displayRotation(); }
 
     static final String PREF_ENABLED = "camera", PREF_LENS = "cameraLens", PREF_FLIP = "cameraFlip";
+    /** Focus point in the picture as sent (0..1, origin top-left) and continuous vs. focus-once-and-hold. */
+    static final String PREF_FOCUS_X = "cameraFocusX", PREF_FOCUS_Y = "cameraFocusY", PREF_FOCUS_LOCK = "cameraFocusLock";
     private static final long WISH_TTL_MS = 10000;          // remote wish lapses without a sync / frame reply
     private static final int PREVIEW_W = 640, PREVIEW_H = 360, PREVIEW_FPS = 8;
 
@@ -87,6 +92,14 @@ final class CameraStreamer {
     private int openW, openH;
     private String openId;
     private int sensorOrientation;
+    private Rect activeArray;
+    private int streamW, streamH;
+    private int afRegionsMax, aeRegionsMax;
+
+    // autofocus state from the capture results
+    private volatile String afState = "off";
+    private volatile float focusDiopters = -1;
+    private volatile String lastFocusId;
     private boolean frontFacing;
     private boolean opening;
     private long sessionStartMs;
@@ -142,8 +155,38 @@ final class CameraStreamer {
         reconcileSoon(false);
     }
 
-    /** The backoffice's wish from a sync or frame reply: {want, fps, width, height, quality}. */
+    float focusX() { return prefs.getFloat(PREF_FOCUS_X, 0.5f); }
+    float focusY() { return prefs.getFloat(PREF_FOCUS_Y, 0.5f); }
+    boolean focusLocked() { return prefs.getBoolean(PREF_FOCUS_LOCK, false); }
+    String afState() { return afState; }
+
+    /**
+     * Focus (and meter exposure) on a point of the picture, e.g. the router bit: x, y in 0..1 from the
+     * top-left of the picture as viewers see it. {@code lock} null keeps the mode. Then runs a focus pass.
+     */
+    void setFocus(float x, float y, Boolean lock) {
+        SharedPreferences.Editor e = prefs.edit()
+                .putFloat(PREF_FOCUS_X, Math.max(0f, Math.min(1f, x)))
+                .putFloat(PREF_FOCUS_Y, Math.max(0f, Math.min(1f, y)));
+        if (lock != null) e.putBoolean(PREF_FOCUS_LOCK, lock);
+        e.apply();
+        DebugLog.srv(String.format(Locale.US, "Camera: focus at %.0f%% / %.0f%%%s", x * 100, y * 100,
+                focusLocked() ? " (locked)" : " (continuous)"));
+        cam.post(() -> applyFocus(true));
+    }
+
+    /** Run a new focus pass at the current point. */
+    void refocus() { cam.post(() -> applyFocus(true)); }
+
+    /** The backoffice's wish from a sync or frame reply: {want, fps, width, height, quality, focus?}. */
     void onRemoteWish(JSONObject w) {
+        JSONObject f = w != null ? w.optJSONObject("focus") : null;
+        if (f != null && !f.optString("id").equals(lastFocusId)) {      // a viewer clicked the picture / Refocus
+            lastFocusId = f.optString("id");
+            if (f.has("x") && f.has("y")) setFocus((float) f.optDouble("x"), (float) f.optDouble("y"), f.has("lock") ? f.optBoolean("lock") : null);
+            else if (f.has("lock")) setFocus(focusX(), focusY(), f.optBoolean("lock"));
+            else refocus();
+        }
         boolean want = w != null && w.optBoolean("want");
         if (want) {
             remoteFps = Math.max(1, Math.min(15, w.optInt("fps", 5)));
@@ -166,7 +209,9 @@ final class CameraStreamer {
         try {
             o.put("enabled", enabled()).put("permission", hasPermission()).put("foreground", foreground)
                     .put("lens", prefs.getString(PREF_LENS, "back")).put("live", live).put("fps", fps())
-                    .put("width", outW).put("height", outH).put("bytes", lastBytes);
+                    .put("width", outW).put("height", outH).put("bytes", lastBytes)
+                    .put("focus", new JSONObject().put("x", focusX()).put("y", focusY()).put("lock", focusLocked())
+                            .put("state", afState).put("diopters", focusDiopters).put("id", lastFocusId));
             String why = blockedReason();
             if (why != null) o.put("error", why);
             else if (error != null) o.put("error", error);
@@ -258,6 +303,12 @@ final class CameraStreamer {
             Integer f = ch.get(CameraCharacteristics.LENS_FACING);
             frontFacing = f != null && f == CameraCharacteristics.LENS_FACING_FRONT;
             Size size = pickSize(ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP), wantW, wantH);
+            activeArray = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+            Integer afMax = ch.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF), aeMax = ch.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE);
+            afRegionsMax = afMax != null ? afMax : 0;
+            aeRegionsMax = aeMax != null ? aeMax : 0;
+            streamW = size.getWidth();
+            streamH = size.getHeight();
             openW = wantW;
             openH = wantH;
             openId = id;
@@ -316,12 +367,9 @@ final class CameraStreamer {
                     if (device == null) { s.close(); return; }
                     session = s;
                     try {
-                        CaptureRequest.Builder b = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                        b.addTarget(reader.getSurface());
-                        b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-                        b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
-                        s.setRepeatingRequest(b.build(), null, cam);
+                        s.setRepeatingRequest(buildRequest(null).build(), afCallback, cam);
                         sessionStartMs = System.currentTimeMillis();
+                        cam.postDelayed(() -> applyFocus(true), WARMUP_MS);   // exposure first, then a focus pass
                         error = null;
                         notifyState();
                     } catch (Exception e) {
@@ -334,6 +382,89 @@ final class CameraStreamer {
             fail("camera session failed: " + e.getMessage());
         }
     }
+
+    /**
+     * The streaming request: autofocus and exposure metered on the focus point, sharpening at high quality,
+     * light noise reduction (strong noise reduction smears the fine detail of the cut).
+     */
+    private CaptureRequest.Builder buildRequest(Integer afTrigger) throws CameraAccessException {
+        CaptureRequest.Builder b = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+        b.addTarget(reader.getSurface());
+        b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+        b.set(CaptureRequest.CONTROL_AF_MODE, focusLocked() ? CaptureRequest.CONTROL_AF_MODE_AUTO
+                : CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+        b.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY);
+        b.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST);
+        MeteringRectangle region = focusRegion();
+        if (region != null) {
+            if (afRegionsMax > 0) b.set(CaptureRequest.CONTROL_AF_REGIONS, new MeteringRectangle[]{region});
+            if (aeRegionsMax > 0) b.set(CaptureRequest.CONTROL_AE_REGIONS, new MeteringRectangle[]{region});
+        }
+        if (afTrigger != null) b.set(CaptureRequest.CONTROL_AF_TRIGGER, afTrigger);
+        return b;
+    }
+
+    /** Re-issue the repeating request (new point / mode); with {@code pass}, restart the focus search. */
+    private void applyFocus(boolean pass) {
+        if (session == null || device == null || reader == null) return;
+        try {
+            session.setRepeatingRequest(buildRequest(null).build(), afCallback, cam);
+            if (pass) {
+                session.capture(buildRequest(CaptureRequest.CONTROL_AF_TRIGGER_CANCEL).build(), afCallback, cam);
+                // continuous: the cancel restarts the passive scan; auto (locked): focus once and hold
+                if (focusLocked()) session.capture(buildRequest(CaptureRequest.CONTROL_AF_TRIGGER_START).build(), afCallback, cam);
+            }
+        } catch (Exception e) {
+            DebugLog.srvErr("Camera: focus request failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The focus point (picture coordinates) as a sensor metering rectangle: undo the picture's rotation,
+     * then account for the centre crop from the 4:3 sensor to the 16:9 stream. About 16 % of the height.
+     */
+    private MeteringRectangle focusRegion() {
+        if (activeArray == null || streamW == 0) return null;
+        float x = focusX(), y = focusY(), sx, sy;
+        switch (jpegRotation()) {
+            case 90: sx = y; sy = 1 - x; break;
+            case 180: sx = 1 - x; sy = 1 - y; break;
+            case 270: sx = 1 - y; sy = x; break;
+            default: sx = x; sy = y;
+        }
+        float aw = activeArray.width(), ah = activeArray.height(), aspect = (float) streamW / streamH;
+        float cw = aw, ch = ah;
+        if (aw / ah > aspect) cw = ah * aspect; else ch = aw / aspect;
+        float cx = activeArray.left + (aw - cw) / 2 + sx * cw, cy = activeArray.top + (ah - ch) / 2 + sy * ch;
+        int half = Math.round(Math.min(cw, ch) * 0.08f);
+        int l = Math.max(activeArray.left, Math.round(cx) - half), t = Math.max(activeArray.top, Math.round(cy) - half);
+        int r = Math.min(activeArray.right - 1, Math.round(cx) + half), b = Math.min(activeArray.bottom - 1, Math.round(cy) + half);
+        if (r <= l || b <= t) return null;
+        return new MeteringRectangle(new Rect(l, t, r, b), MeteringRectangle.METERING_WEIGHT_MAX - 1);
+    }
+
+    private final CameraCaptureSession.CaptureCallback afCallback = new CameraCaptureSession.CaptureCallback() {
+        @Override public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest req, TotalCaptureResult res) {
+            Integer st = res.get(CaptureResult.CONTROL_AF_STATE);
+            Float d = res.get(CaptureResult.LENS_FOCUS_DISTANCE);
+            if (d != null) focusDiopters = d;
+            String v;
+            if (st == null) v = "off";
+            else switch (st) {
+                case CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN:
+                case CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN: v = "searching"; break;
+                case CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED: v = "focused"; break;
+                case CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED: v = "locked"; break;
+                case CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED: v = "failed"; break;
+                case CaptureResult.CONTROL_AF_STATE_PASSIVE_UNFOCUSED: v = "unfocused"; break;
+                default: v = "idle";
+            }
+            if (!v.equals(afState)) {
+                afState = v;
+                DebugLog.srvVerbose("Camera: autofocus " + v + (d != null ? String.format(Locale.US, " (%.1f dpt)", d) : ""));
+            }
+        }
+    };
 
     private void onImage(ImageReader r) {
         Image img = r.acquireLatestImage();
@@ -397,6 +528,7 @@ final class CameraStreamer {
         reader = null;
         openW = openH = 0;
         sessionStartMs = Long.MAX_VALUE / 2;
+        afState = "off";
         synchronized (frameLock) { frameReady = false; frameLock.notifyAll(); }
     }
 
@@ -461,7 +593,7 @@ final class CameraStreamer {
             }
             int rot = jpegRotation();
             if (rot == 180) rotate180(work, w, h);
-            int quality = remote ? remoteQuality : 60;
+            int quality = remote ? remoteQuality : 75;
             ByteArrayOutputStream bo = new ByteArrayOutputStream(64 * 1024);
             new YuvImage(work, ImageFormat.NV21, w, h, null).compressToJpeg(new Rect(0, 0, w, h), quality, bo);
             byte[] jpeg = bo.toByteArray();

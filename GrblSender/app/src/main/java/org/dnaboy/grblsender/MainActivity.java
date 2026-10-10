@@ -2028,9 +2028,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     // ---------------------------------------------------------------- Navigation: rail, pages, settings sections
 
-    static final int SEC_GENERAL = 0, SEC_FIRMWARE = 1, SEC_UPDATE = 2, SEC_FILES = 3, SEC_JOBS = 4, SEC_CAMERA = 5, SEC_DEBUG = 6;
-    private static final String[] SEC_NAMES = {"General", "Firmware", "App update", "Files", "Job log", "Camera", "Debug console"};
-    private static final String[] SEC_ICONS = {"general", "firmware", "update", "files", "jobs", "camera", "debug"};
+    static final int SEC_GENERAL = 0, SEC_FIRMWARE = 1, SEC_UPDATE = 2, SEC_FILES = 3, SEC_JOBS = 4, SEC_CAMERA = 5, SEC_DEBUG = 6, SEC_DIAG = 7;
+    private static final String[] SEC_NAMES = {"General", "Firmware", "App update", "Files", "Job log", "Camera", "Debug console", "Diagnosis"};
+    private static final String[] SEC_ICONS = {"general", "firmware", "update", "files", "jobs", "camera", "debug", "diag"};
     private final LinearLayout[] secItems = new LinearLayout[SEC_NAMES.length];
     private FrameLayout secContent;
     private int section = -1;
@@ -2150,6 +2150,19 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 DebugSection ds = new DebugSection(this, this::linkSummary);
                 v = ds.build();
                 settingsLeave = ds::detach;
+                break;
+            }
+            case SEC_DIAG: {
+                DiagSection dg = new DiagSection(this, new DiagSection.Host() {
+                    @Override public boolean connected() { return port != null; }
+                    @Override public boolean busy() { return streaming; }
+                    @Override public String machineState() { return machineState; }
+                    @Override public java.util.Map<String, String> grblSettings() { return grblSettings; }
+                    @Override public void send(String cmd) { queueCommand(cmd); }
+                    @Override public void log(String msg) { MainActivity.this.log(msg); }
+                });
+                v = dg.build();
+                settingsLeave = dg::detach;
                 break;
             }
             default:

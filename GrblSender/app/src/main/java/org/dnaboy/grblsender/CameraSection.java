@@ -4,6 +4,10 @@ import android.app.Activity;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.view.MotionEvent;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
@@ -30,7 +34,9 @@ final class CameraSection {
     private final Runnable askPermission;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private ImageView img;
-    private TextView placeholder, status, previewInfo;
+    private TextView placeholder, status, previewInfo, focusInfo;
+    private Reticle reticle;
+    private RadioButton fCont, fLock;
     private Button grant;
     private Switch enable;
     private boolean attached;
@@ -65,6 +71,16 @@ final class CameraSection {
         placeholder = Ui.text(a, "Starting the camera…", 14, Ui.MUTED);
         placeholder.setGravity(Gravity.CENTER);
         frame.addView(placeholder, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, Ui.dp(a, 250)));
+        reticle = new Reticle();
+        frame.addView(reticle, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, Ui.dp(a, 250)));
+        reticle.setOnTouchListener((v, ev) -> {
+            if (ev.getAction() != MotionEvent.ACTION_UP) return true;
+            RectF r = imageRect();
+            if (r == null || !r.contains(ev.getX(), ev.getY())) return true;
+            cam.setFocus((ev.getX() - r.left) / r.width(), (ev.getY() - r.top) / r.height(), null);
+            reticle.invalidate();
+            return true;
+        });
         prevCard.addView(frame);
         previewInfo = Ui.text(a, "", 12, Ui.MUTED);
         previewInfo.setPadding(0, Ui.dp(a, 6), 0, 0);
@@ -112,7 +128,31 @@ final class CameraSection {
         flip.setTextSize(15);
         flip.setChecked(prefs.getBoolean(CameraStreamer.PREF_FLIP, false));
         lensCard.addView(flip, Ui.margins(a, 0, 8, 0, 0));
-        right.addView(lensCard);
+        right.addView(lensCard, Ui.margins(a, 0, 0, 0, 10));
+
+        LinearLayout focusCard = Ui.card(a);
+        focusCard.addView(Ui.label(a, "Focus"));
+        RadioGroup fMode = new RadioGroup(a);
+        fMode.setOrientation(RadioGroup.VERTICAL);
+        fCont = radio("Continuous – keeps refocusing on the point");
+        fLock = radio("Locked – focus once on the point, then hold");
+        fMode.addView(fCont);
+        fMode.addView(fLock);
+        (cam.focusLocked() ? fLock : fCont).setChecked(true);
+        focusCard.addView(fMode);
+        LinearLayout fRow = Ui.row(a);
+        focusInfo = Ui.text(a, "", 13, Ui.MUTED);
+        fRow.addView(focusInfo, Ui.weight(1));
+        Button refocus = Ui.button(a, "Refocus", 0);
+        fRow.addView(refocus);
+        focusCard.addView(fRow, Ui.margins(a, 0, 6, 0, 0));
+        TextView fNote = Ui.text(a, "Tap the preview on the router bit to focus and set the exposure there. "
+                + "Viewers can click the picture on the backoffice too. Locked avoids hunting while the spindle moves.", 12, Ui.MUTED);
+        fNote.setPadding(0, Ui.dp(a, 6), 0, 0);
+        focusCard.addView(fNote);
+        right.addView(focusCard);
+        fMode.setOnCheckedChangeListener((g, id) -> cam.setFocus(cam.focusX(), cam.focusY(), id == fLock.getId()));
+        refocus.setOnClickListener(v -> cam.refocus());
 
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         rp.setMarginStart(Ui.dp(a, 12));
@@ -132,7 +172,10 @@ final class CameraSection {
             prefs.edit().putString(CameraStreamer.PREF_LENS, id == front.getId() ? "front" : "back").apply();
             cam.settingsChanged();
         });
-        flip.setOnCheckedChangeListener((b, on) -> prefs.edit().putBoolean(CameraStreamer.PREF_FLIP, on).apply());
+        flip.setOnCheckedChangeListener((b, on) -> {
+            prefs.edit().putBoolean(CameraStreamer.PREF_FLIP, on).apply();
+            cam.refocus();                       // the focus point moves on the sensor
+        });
         grant.setOnClickListener(v -> askPermission.run());
 
         cam.setPreview(this::onFrame);
@@ -160,6 +203,12 @@ final class CameraSection {
 
     void refresh() {
         if (!attached) return;
+        String st = cam.afState();
+        focusInfo.setText(String.format(java.util.Locale.US, "Point %.0f%% · %.0f%% · %s", cam.focusX() * 100, cam.focusY() * 100,
+                "off".equals(st) ? "camera off" : st));
+        focusInfo.setTextColor(st.equals("focused") || st.equals("locked") ? Ui.OK : st.equals("failed") ? Ui.ERR
+                : st.equals("searching") ? Ui.WARN : Ui.MUTED);
+        reticle.invalidate();
         String why = cam.blockedReason();
         boolean noPerm = !cam.hasPermission();
         grant.setVisibility(noPerm && cam.enabled() ? View.VISIBLE : View.GONE);
@@ -191,6 +240,37 @@ final class CameraSection {
             placeholder.setVisibility(View.GONE);
             previewInfo.setText(w + "×" + h + " · " + jpeg.length / 1024 + " KB per frame");
         });
+    }
+
+    /** Where the picture is drawn inside the preview (FIT_CENTER), or null before the first frame. */
+    private RectF imageRect() {
+        if (img.getDrawable() == null) return null;
+        RectF r = new RectF(0, 0, img.getDrawable().getIntrinsicWidth(), img.getDrawable().getIntrinsicHeight());
+        img.getImageMatrix().mapRect(r);
+        r.offset(img.getPaddingLeft(), img.getPaddingTop());
+        return r;
+    }
+
+    /** Focus marker over the preview: a square at the focus point, coloured by the autofocus state. */
+    private final class Reticle extends View {
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        Reticle() {
+            super(a);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Ui.dp(a, 2));
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            RectF r = imageRect();
+            if (r == null) return;
+            float x = r.left + cam.focusX() * r.width(), y = r.top + cam.focusY() * r.height(), h = r.height() * 0.08f;
+            String st = cam.afState();
+            p.setColor(st.equals("focused") || st.equals("locked") ? Ui.OK : st.equals("failed") ? Ui.ERR : Ui.WARN);
+            c.drawRect(x - h, y - h, x + h, y + h, p);
+            c.drawLine(x - h * 0.35f, y, x + h * 0.35f, y, p);
+            c.drawLine(x, y - h * 0.35f, x, y + h * 0.35f, p);
+        }
     }
 
     void detach() {

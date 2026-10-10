@@ -237,6 +237,11 @@ final class Ui {
                     path.moveTo(4, 15); path.lineTo(4, 20.5f); path.lineTo(20, 20.5f); path.lineTo(20, 15);
                     c.drawPath(path, p);
                     break;
+                case "diag":      // square pulse train
+                    path.moveTo(2.5f, 17); path.lineTo(6, 17); path.lineTo(6, 7); path.lineTo(10, 7); path.lineTo(10, 17);
+                    path.lineTo(14, 17); path.lineTo(14, 7); path.lineTo(18, 7); path.lineTo(18, 17); path.lineTo(21.5f, 17);
+                    c.drawPath(path, p);
+                    break;
                 case "general":   // sliders
                     line(c, 4, 7, 20, 7); line(c, 4, 17, 20, 17);
                     fillCircle(c, 9, 7, 2.6f); fillCircle(c, 15, 17, 2.6f);
