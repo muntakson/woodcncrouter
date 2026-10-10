@@ -1,0 +1,15 @@
+{
+  "name": "grblsender-backoffice",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Grbl Sender backoffice: log ingest, APK/firmware releases, remote control, AI CAM",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "clipper-lib": "^6.4.2"
+  }
+}

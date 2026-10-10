@@ -6,6 +6,7 @@ backoffice/.env
 backoffice/data/
 backoffice/apk/
 backoffice/gcode/
+backoffice/dxf/
 node_modules/
 
 # Android build

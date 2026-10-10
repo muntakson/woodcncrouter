@@ -1,6 +1,6 @@
 // Grbl Sender backoffice: receives debug logs from the Android app, serves APK
 // releases, and hosts an admin dashboard with a live debug console.
-// Zero npm dependencies (node:http + node:sqlite).
+// node:http + node:sqlite; the AI CAM page adds @anthropic-ai/sdk and clipper-lib (see cam.js).
 'use strict';
 
 const http = require('node:http');
@@ -14,6 +14,13 @@ for (const line of fs.readFileSync(path.join(__dirname, '.env'), 'utf8').split('
   const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)\s*$/);
   if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
 }
+// The Anthropic key for AI CAM lives with the other credentials in ~/.secrets unless .env sets it
+if (!process.env.ANTHROPIC_API_KEY) {
+  try {
+    const m = fs.readFileSync(path.join(require('node:os').homedir(), '.secrets'), 'utf8').match(/^\s*(?:export\s+)?ANTHROPIC_API_KEY\s*=\s*["']?([^"'\s]+)/m);
+    if (m) process.env.ANTHROPIC_API_KEY = m[1];
+  } catch { /* no ~/.secrets */ }
+}
 const PORT = Number(process.env.PORT || 3077);
 const INGEST_KEY = process.env.INGEST_KEY;
 const DASH_USER = process.env.DASH_USER || 'admin';
@@ -22,6 +29,8 @@ const APK_DIR = path.join(__dirname, 'apk');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const GCODE_DIR = path.join(__dirname, 'gcode');
 const FIRMWARE_DIR = path.join(__dirname, 'firmware');
+const DXF_DIR = path.join(__dirname, 'dxf');
+const DXF_NAME = /^[\w.\- ()]+\.dxf$/i;
 const MAX_LOG_ROWS = 200000;
 // Bearer token for the remote-control HTTP API (scripts, other servers); the dashboard login works too
 const CNC_API_KEY = process.env.CNC_API_KEY || '';
@@ -48,7 +57,19 @@ db.exec(`
     uid TEXT PRIMARY KEY, job_id TEXT, device_id TEXT, ts INTEGER, event TEXT, line INTEGER, detail TEXT
   );
   CREATE INDEX IF NOT EXISTS job_events_job ON job_events(job_id, ts);
+  CREATE TABLE IF NOT EXISTS dxf_files (
+    name TEXT PRIMARY KEY, size INTEGER, sha256 TEXT, uploaded INTEGER, modified INTEGER, source TEXT,
+    format TEXT, version TEXT, units TEXT, width_mm REAL, height_mm REAL, loops INTEGER, circles INTEGER, open_loops INTEGER,
+    entities TEXT, error TEXT
+  );
+  CREATE TABLE IF NOT EXISTS cam_runs (
+    id TEXT PRIMARY KEY, dxf TEXT, created INTEGER, finished INTEGER, status TEXT, params TEXT, plan TEXT,
+    gcode TEXT, stats TEXT, warnings TEXT, error TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS cam_runs_dxf ON cam_runs(dxf, created);
 `);
+// a run cannot survive a restart
+db.prepare("UPDATE cam_runs SET status = 'failed', error = 'backoffice restarted', finished = ? WHERE status NOT IN ('done', 'failed')").run(Date.now());
 const upsertDevice = db.prepare(`
   INSERT INTO devices (id, model, manufacturer, android, sdk, app_version, app_code, ip, first_seen, last_seen)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -277,6 +298,14 @@ function camInfo(id) {
     camera: c.camera || null, lastError: c.lastError };
 }
 
+/** What the tablet gets back about its camera: the viewers' wish plus a pending focus request. */
+function camReply(id) {
+  const c = cams.get(id);
+  const out = camWanted(id) || { want: false };
+  if (c?.focusReq) out.focus = c.focusReq;
+  return out;
+}
+
 function mjpegWrite(res, c) {
   res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${c.frame.length}\r\nX-Frame-Seq: ${c.seq}\r\n\r\n`);
   res.write(c.frame);
@@ -296,6 +325,123 @@ function serveFile(res, file, extraHeaders = {}) {
     });
     fs.createReadStream(file).pipe(res);
   });
+}
+
+// ---------------------------------------------------------------- DXF files + AI CAM
+const { parseDxf, viewerGeometry } = require('./dxf');
+const cam = require('./cam');
+const { analyze } = require('./preprocess');
+const geoCache = new Map();        // name -> { mtime, g }
+function dxfGeometry(name) {
+  const file = path.join(DXF_DIR, name);
+  const st = fs.statSync(file);
+  const hit = geoCache.get(name);
+  if (hit && hit.mtime === st.mtimeMs) return hit.g;
+  const g = parseDxf(fs.readFileSync(file));
+  geoCache.set(name, { mtime: st.mtimeMs, g });
+  return g;
+}
+const upsertDxf = db.prepare(`
+  INSERT INTO dxf_files (name, size, sha256, uploaded, modified, source, format, version, units, width_mm, height_mm, loops, circles, open_loops, entities, error)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(name) DO UPDATE SET size=excluded.size, sha256=excluded.sha256, modified=excluded.modified, format=excluded.format,
+    version=excluded.version, units=excluded.units, width_mm=excluded.width_mm, height_mm=excluded.height_mm, loops=excluded.loops,
+    circles=excluded.circles, open_loops=excluded.open_loops, entities=excluded.entities, error=excluded.error,
+    uploaded=CASE WHEN excluded.source = 'upload' THEN excluded.uploaded ELSE dxf_files.uploaded END,
+    source=CASE WHEN excluded.source = 'upload' THEN 'upload' ELSE dxf_files.source END`);
+// Parse a DXF in the folder and store its metadata; files copied in by hand are picked up the same way
+function indexDxf(name, source) {
+  const file = path.join(DXF_DIR, name);
+  const buf = fs.readFileSync(file), st = fs.statSync(file);
+  const sha = crypto.createHash('sha256').update(buf).digest('hex');
+  let g = null, error = null;
+  try { geoCache.delete(name); g = dxfGeometry(name); } catch (e) { error = String(e.message || e); }
+  const now = Date.now();
+  upsertDxf.run(name, buf.length, sha, now, st.mtimeMs, source, g?.format ?? null, g?.version ?? null, g?.units ?? null,
+    g ? g.bbox[2] - g.bbox[0] : null, g ? g.bbox[3] - g.bbox[1] : null, g?.loops.length ?? null,
+    g ? g.loops.filter((l) => l.circle).length : null, g ? g.loops.filter((l) => !l.closed).length : null,
+    g ? JSON.stringify(g.entityCounts) : null, error);
+}
+function listDxf() {
+  fs.mkdirSync(DXF_DIR, { recursive: true });
+  const names = fs.readdirSync(DXF_DIR).filter((f) => DXF_NAME.test(f));
+  const rows = new Map(db.prepare('SELECT * FROM dxf_files').all().map((r) => [r.name, r]));
+  for (const n of names) {
+    const r = rows.get(n), st = fs.statSync(path.join(DXF_DIR, n));
+    if (!r || r.size !== st.size || r.modified !== st.mtimeMs) indexDxf(n, r ? r.source : 'folder');
+  }
+  for (const n of rows.keys()) if (!names.includes(n)) db.prepare('DELETE FROM dxf_files WHERE name = ?').run(n);
+  const runs = db.prepare(`SELECT dxf, COUNT(*) AS n, MAX(created) AS last FROM cam_runs GROUP BY dxf`).all();
+  const rc = new Map(runs.map((r) => [r.dxf, r]));
+  return db.prepare('SELECT * FROM dxf_files ORDER BY uploaded DESC').all().map((r) => ({
+    ...r, entities: r.entities ? JSON.parse(r.entities) : null, cam_runs: rc.get(r.name)?.n || 0, last_run: rc.get(r.name)?.last || null,
+  }));
+}
+
+// File name, tool, material and thickness from a request (query or JSON body), checked
+function camParams(b) {
+  const name = path.basename(String(b.name || ''));
+  if (!DXF_NAME.test(name) || !fs.existsSync(path.join(DXF_DIR, name))) return { status: 404, error: 'no such DXF file' };
+  const toolDiameter = Number(b.toolDiameter), thickness = Number(b.thickness ?? 18);
+  if (!(toolDiameter >= 0.5 && toolDiameter <= 25)) return { status: 400, error: 'toolDiameter must be 0.5 … 25 mm' };
+  if (!(thickness >= 0.5 && thickness <= 100)) return { status: 400, error: 'thickness must be 0.5 … 100 mm' };
+  const material = String(b.material || 'plywood').slice(0, 80).trim() || 'plywood';
+  // bridges (tabs): a JSON object, or flat query fields bridges=1&bridgeCount=&bridgeWidth=&bridgeHeight=&bridgeCutouts=1
+  const br = typeof b.bridges === 'object' && b.bridges ? b.bridges
+    : { enabled: b.bridges === '1' || b.bridges === 'true', count: b.bridgeCount, width: b.bridgeWidth, height: b.bridgeHeight, cutouts: b.bridgeCutouts === '1' || b.bridgeCutouts === 'true' };
+  let bridges = { enabled: false };
+  if (b.bridges !== undefined && br.enabled) {
+    const count = Math.round(Number(br.count ?? 4)), width = Number(br.width ?? 8), height = Number(br.height ?? 3);
+    if (!(count >= 1 && count <= 12)) return { status: 400, error: 'bridge count must be 1 … 12' };
+    if (!(width >= 1 && width <= 50)) return { status: 400, error: 'bridge width must be 1 … 50 mm' };
+    if (!(height >= 0.3 && height < thickness)) return { status: 400, error: `bridge height must be 0.3 mm … less than the ${thickness} mm thickness` };
+    bridges = { enabled: true, count, width, height, cutouts: !!br.cutouts };
+  }
+  let g;
+  try { g = dxfGeometry(name); } catch (e) { return { status: 422, error: `cannot read this DXF: ${e.message}` }; }
+  return { name, g, params: { toolDiameter, material, thickness, bridges } };
+}
+
+const camLive = new Map();         // run id -> { phase, thinking, chars } while Claude is streaming
+function camRunRow(r) {
+  if (!r) return null;
+  const live = camLive.get(r.id);
+  return { ...r, params: JSON.parse(r.params || 'null'), plan: JSON.parse(r.plan || 'null'), stats: JSON.parse(r.stats || 'null'),
+    warnings: JSON.parse(r.warnings || '[]'), live: live || null };
+}
+async function runCam(id, name, params, analysis) {
+  const set = (fields) => {
+    const keys = Object.keys(fields);
+    db.prepare(`UPDATE cam_runs SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => fields[k]), id);
+  };
+  try {
+    const g = dxfGeometry(name);
+    let raw, model;
+    if (params.mode === 'rules') {             // the preprocessor's own plan: no API call
+      raw = analysis.plan; model = 'rules (no AI)';
+    } else {
+      camLive.set(id, { phase: 'sending drawing to Claude', thinking: '', chars: 0 });
+      const res = await cam.requestPlan(g, name, params, (p) => camLive.set(id, p), analysis.findings);
+      camLive.set(id, { phase: 'generating toolpaths', thinking: res.thinking.slice(-1200), chars: 0 });
+      set({ model: res.model, input_tokens: res.usage.input, output_tokens: res.usage.output });
+      raw = res.plan; model = res.model;
+    }
+    set({ status: 'generating' });
+    const plan = cam.normalizePlan(raw, g, params);
+    const created = Date.now();
+    const out = cam.generateGcode(g, plan, params, { file: name, created, model });
+    const base = name.replace(/\.dxf$/i, '').replace(/[^\w.\- ()]+/g, '_');
+    const gname = `${base}_${params.mode === 'rules' ? 'cam' : 'ai'}_${String(params.toolDiameter).replace('.', 'p')}mm.nc`;
+    fs.mkdirSync(GCODE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(GCODE_DIR, gname), out.gcode);
+    set({ status: 'done', finished: Date.now(), plan: JSON.stringify(plan), gcode: gname, stats: JSON.stringify(out.stats),
+      warnings: JSON.stringify([...plan.warnings, ...out.warnings]) });
+  } catch (e) {
+    console.error('AI CAM', id, e);
+    set({ status: 'failed', finished: Date.now(), error: cam.apiErrorMessage(e) });
+  } finally {
+    camLive.delete(id);
+  }
 }
 
 // ---------------------------------------------------------------- routes
@@ -374,9 +520,10 @@ async function handle(req, res) {
       const c = camState(id);
       c.camera = data.camera;
       c.lastError = data.camera.error || null;
+      if (c.focusReq && data.camera.focus?.id === c.focusReq.id) c.focusReq = null;   // the tablet applied it
     }
     return send(res, 200, { ok: true, commands: cmds, jobEventsStored: stored, serverTime: Date.now(),
-      camera: camWanted(id) || { want: false } });
+      camera: camReply(id) });
   }
 
   // ---- camera frames from the tablet (ingest key): one JPEG per request
@@ -394,8 +541,7 @@ async function handle(req, res) {
     for (const w of c.waiters) w();
     c.waiters.clear();
     for (const r of c.mjpeg) mjpegWrite(r.res, c);
-    if (cnc.has(id)) cnc.get(id).seen = now;
-    return send(res, 200, camWanted(id) || { want: false });
+    return send(res, 200, camReply(id));
   }
 
   // ---- remote-control API: dashboard login (LAN / Basic) or "Authorization: Bearer CNC_API_KEY"
@@ -491,6 +637,24 @@ async function handle(req, res) {
         'X-Frame-Seq': c.seq, 'X-Frame-Ts': c.ts, 'X-Frame-Width': c.w, 'X-Frame-Height': c.h,
         ...(snapshot ? { 'Content-Disposition': `inline; filename="cnc-${new Date(c.ts).toISOString().replace(/[:.]/g, '-')}.jpg"` } : {}) });
       return res.end(c.frame);
+    }
+    if (req.method === 'POST' && p === '/api/cnc/camera/focus') {
+      let body;
+      try { body = JSON.parse((await readBody(req, 4096)).toString('utf8') || '{}'); } catch { return send(res, 400, { error: 'bad json' }); }
+      const id = pickDevice(body.device);
+      if (!id) return send(res, 404, { error: 'no tablet has connected yet' });
+      const f = { id: crypto.randomUUID() };
+      if (body.x !== undefined || body.y !== undefined) {
+        const x = Number(body.x), y = Number(body.y);
+        if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return send(res, 400, { error: 'x and y must be between 0 and 1 (fraction of the picture from the top-left)' });
+        f.x = x; f.y = y;
+      }
+      if (body.lock !== undefined) f.lock = !!body.lock;
+      const c = camState(id);
+      c.focusReq = f;
+      const d = cnc.get(id);
+      if (d) wakeDevice(d);                 // deliver it with the next sync without waiting for the long-poll
+      return send(res, 202, { ok: true, device: id, focus: f });
     }
     if (isGet && p === '/api/cnc/camera.mjpeg') {
       const id = pickDevice(url.searchParams.get('device'));
@@ -628,6 +792,80 @@ async function handle(req, res) {
 
   if (req.method === 'GET' && (p === '/app' || p === '/app/')) return serveFile(res, path.join(PUBLIC_DIR, 'app.html'));
   if (req.method === 'GET' && (p === '/app/api' || p === '/api/docs')) return serveFile(res, path.join(PUBLIC_DIR, 'api.html'));
+
+  // ---- AI CAM: DXF library, geometry for the viewer, Claude-planned toolpaths
+  if (isGet && p === '/api/dxf') return send(res, 200, listDxf());
+  if (req.method === 'POST' && p === '/api/dxf/upload') {
+    const name = path.basename(url.searchParams.get('name') || '');
+    if (!DXF_NAME.test(name)) return send(res, 400, { error: 'name must end in .dxf (letters, digits, space, . - _ ( ) only)' });
+    const body = await readBody(req, 50 * 1024 * 1024);
+    if (!body.length) return send(res, 400, { error: 'empty file' });
+    fs.mkdirSync(DXF_DIR, { recursive: true });
+    fs.writeFileSync(path.join(DXF_DIR, name), body);
+    indexDxf(name, 'upload');
+    const row = db.prepare('SELECT * FROM dxf_files WHERE name = ?').get(name);
+    return send(res, 200, { ok: true, ...row, entities: row.entities ? JSON.parse(row.entities) : null });
+  }
+  if (req.method === 'DELETE' && p.startsWith('/api/dxf/')) {
+    const name = path.basename(decodeURIComponent(p.slice('/api/dxf/'.length)));
+    if (!DXF_NAME.test(name)) return send(res, 400, { error: 'not a DXF file' });
+    const file = path.join(DXF_DIR, name);
+    if (!fs.existsSync(file)) return send(res, 404, { error: 'no such file' });
+    fs.unlinkSync(file);
+    geoCache.delete(name);
+    db.prepare('DELETE FROM dxf_files WHERE name = ?').run(name);
+    return send(res, 200, { ok: true, deleted: name });
+  }
+  if (isGet && p === '/api/dxf/geometry') {
+    const name = path.basename(url.searchParams.get('name') || '');
+    if (!DXF_NAME.test(name) || !fs.existsSync(path.join(DXF_DIR, name))) return send(res, 404, { error: 'no such DXF file' });
+    try { return send(res, 200, viewerGeometry(dxfGeometry(name))); } catch (e) { return send(res, 422, { error: `cannot read this DXF: ${e.message}` }); }
+  }
+  if (isGet && /^\/dxf\/[^/]+$/.test(p)) {
+    const name = path.basename(decodeURIComponent(p));
+    if (!DXF_NAME.test(name)) return send(res, 404, 'not found');
+    return serveFile(res, path.join(DXF_DIR, name), { 'Content-Type': 'application/dxf', 'Content-Disposition': `attachment; filename="${name}"` });
+  }
+  // Preprocessor: can fixed rules plan this file with this tool and material, or is Claude needed?
+  if (isGet && p === '/api/cam/analyze') {
+    const q = camParams(Object.fromEntries(url.searchParams));
+    if (q.error) return send(res, q.status, { error: q.error });
+    const a = analyze(q.g, q.params);
+    return send(res, 200, { verdict: a.verdict, findings: a.findings, counts: a.counts, plan: a.plan && { ...a.plan, features: undefined } });
+  }
+  if (req.method === 'POST' && p === '/api/cam/run') {
+    let body;
+    try { body = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8') || '{}'); } catch { return send(res, 400, { error: 'bad json' }); }
+    const q = camParams(body);
+    if (q.error) return send(res, q.status, { error: q.error });
+    const { name, params } = q;
+    // mode: "rules" = the preprocessor's plan, "ai" = Claude, "auto" (default) = rules when they suffice
+    const want = ['rules', 'ai'].includes(body.mode) ? body.mode : 'auto';
+    const analysis = analyze(q.g, params);
+    if (want === 'rules' && analysis.verdict !== 'rules') {
+      return send(res, 409, { error: 'the rules cannot plan this file; use AI CAM', findings: analysis.findings });
+    }
+    params.mode = want === 'auto' ? analysis.verdict : want;
+    if (params.mode === 'ai' && !process.env.ANTHROPIC_API_KEY) return send(res, 503, { error: 'ANTHROPIC_API_KEY is not set on the server' });
+    if (db.prepare("SELECT 1 FROM cam_runs WHERE dxf = ? AND status IN ('planning', 'generating')").get(name)) {
+      return send(res, 409, { error: 'a CAM run for this file is already in progress' });
+    }
+    const id = crypto.randomUUID();
+    db.prepare('INSERT INTO cam_runs (id, dxf, created, status, params, model) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, name, Date.now(), 'planning', JSON.stringify(params), params.mode === 'rules' ? 'rules (no AI)' : cam.MODEL);
+    runCam(id, name, params, analysis);
+    return send(res, 202, camRunRow(db.prepare('SELECT * FROM cam_runs WHERE id = ?').get(id)));
+  }
+  if (isGet && p === '/api/cam/runs') {
+    const name = url.searchParams.get('dxf');
+    const rows = name ? db.prepare('SELECT * FROM cam_runs WHERE dxf = ? ORDER BY created DESC LIMIT 50').all(name)
+      : db.prepare('SELECT * FROM cam_runs ORDER BY created DESC LIMIT 50').all();
+    return send(res, 200, rows.map(camRunRow));
+  }
+  if (isGet && p.startsWith('/api/cam/runs/')) {
+    const r = camRunRow(db.prepare('SELECT * FROM cam_runs WHERE id = ?').get(decodeURIComponent(p.slice('/api/cam/runs/'.length))));
+    return r ? send(res, 200, r) : send(res, 404, { error: 'unknown run' });
+  }
 
   if (req.method === 'GET' && p === '/api/devices') {
     return send(res, 200, db.prepare(`
