@@ -15,4 +15,10 @@ interface SerialLink {
     void setDtrRts(boolean dtr, boolean rts) throws IOException;
 
     void close();
+
+    /** Change the UART speed of an open link (USB-serial bridges only). */
+    default void setBaud(int baud) throws IOException { throw new IOException("baud change not supported"); }
+
+    /** One line about the link's reader, for the remote link summary. */
+    default String diag() { return ""; }
 }

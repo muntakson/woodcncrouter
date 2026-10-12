@@ -68,6 +68,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private static final int REQ_OPEN_FILE = 1;
     private static final int REQ_SAVE_AS = 2;
     private static final int REQ_FIRMWARE = 4;
+    private static final int REQ_FLUID_UPLOAD = 5;
     private static final int FLASH_LIMIT = 30720;    // 32 KB minus the 2 KB Pro Mini bootloader
     /** Bytes we may have outstanding in the controller's RX buffer: 127 for classic Grbl (128-byte buffer), raised from $I. */
     private int rxLimit = 127;
@@ -109,9 +110,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private long jobStartMs;
     private long allAckedAtMs;
 
-    private final float[] mpos = new float[3];
-    private final float[] wco = new float[3];
-    private final float[] wpos = new float[3];
+    // X, Y, Z and the 4th axis (A) when the controller reports one (Blue Pill)
+    private final float[] mpos = new float[4];
+    private final float[] wco = new float[4];
+    private final float[] wpos = new float[4];
+    private int statusAxes = 3;
     private boolean wposKnown = false;
     private String machineState = "";
     /** Grbl motion settings ($11, $12, $110-112, $120-122) for run-time estimates; read from $$ on connect. */
@@ -119,6 +122,18 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     /** Last $$ report ("$100" -> "81.490"), shown on the CNC setup page. */
     private final java.util.Map<String, String> grblSettings = new java.util.HashMap<>();
     private static final java.util.regex.Pattern SETTING_LINE = java.util.regex.Pattern.compile("^\\$(\\d+)=([-0-9.]+)\\s*$");
+    /** FluidNC config items that stand in for Grbl's $100–$132 (FluidNC 3.0 lists only $10 in $$). */
+    static final String[] FLUID_ITEMS = {"steps_per_mm", "max_rate_mm_per_min", "acceleration_mm_per_sec2", "max_travel_mm"};
+    private static final java.util.regex.Pattern FLUID_LINE = java.util.regex.Pattern.compile(
+            "^\\$/axes/([xyz])/(" + String.join("|", FLUID_ITEMS) + ")=([-0-9.]+)\\s*$", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /** "$/axes/y/max_rate_mm_per_min=1000" -> "$111=1000", so FluidNC answers feed the same settings map and estimate. */
+    static String fluidToGrbl(String line) {
+        java.util.regex.Matcher m = FLUID_LINE.matcher(line);
+        if (!m.matches()) return null;
+        int item = java.util.Arrays.asList(FLUID_ITEMS).indexOf(m.group(2).toLowerCase(Locale.US));
+        return "$1" + item + ("xyz".indexOf(m.group(1).toLowerCase(Locale.US))) + "=" + m.group(3);
+    }
     private int execIdx = -1;                  // program line the machine is executing (from live position)
     private long holdMs, holdSinceMs;          // time spent paused (M0 / feed hold) during the run
     private long lastStatusMs;                 // when Grbl last answered a status query
@@ -197,7 +212,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private final Runnable statusPoll = new Runnable() {
         @Override public void run() {
             if (port != null) {
-                writeRaw(new byte[]{'?'});
+                // a '?' would corrupt an XMODEM transfer, and must not break the silence FluidNC waits for after it
+                if (xmodem == null && espFlasher == null && System.currentTimeMillis() >= quietUntilMs) writeRaw(new byte[]{'?'});
                 ui.postDelayed(this, STATUS_POLL_MS);
             }
         }
@@ -378,6 +394,84 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction()) && port == null) connect();
+        // adb: am start -n org.dnaboy.grblsender/.MainActivity --ez espProbe true  (bootloader check, writes nothing)
+        if (intent.getBooleanExtra("espProbe", false)) startEspProbe();
+        // adb: am start -n org.dnaboy.grblsender/.MainActivity --es fluidUpload config.yaml
+        // uploads <app external files dir>/fluidnc/<name> to FluidNC's local filesystem under the same name
+        String up = intent.getStringExtra("fluidUpload");
+        if (up != null && up.matches("[A-Za-z0-9._-]+")) {
+            java.io.File f = new java.io.File(getExternalFilesDir("fluidnc"), up);
+            try (InputStream in = new java.io.FileInputStream(f)) {
+                startFluidUpload(readBytes(in), up);
+            } catch (Exception e) {
+                log("FluidNC upload: cannot read " + f + ": " + e.getMessage());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- FluidNC file upload (XMODEM)
+
+    private XmodemSender xmodem;
+    /** No writes until then: after XMODEM, FluidNC discards input until the line has been silent for 1.5 s. */
+    private long quietUntilMs;
+    private final Runnable pumpLater = this::pump;
+    private TextView fluidUploadStatus;           // on the (C) FluidNC firmware page while it is shown
+    private final Runnable xmodemWatchdog = new Runnable() {
+        @Override public void run() {
+            if (xmodem == null) return;
+            xmodem.onTimeout();
+            if (xmodem != null) ui.postDelayed(this, 3000);
+        }
+    };
+
+    private static byte[] readBytes(InputStream in) throws java.io.IOException {
+        ByteArrayOutputStream bo = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+        return bo.toByteArray();
+    }
+
+    /** Sends a file to FluidNC's local filesystem with $Xmodem/Receive=<name> (e.g. a new config.yaml). */
+    private void startFluidUpload(byte[] content, String name) {
+        if (port == null) { log("FluidNC upload: connect to the board first"); return; }
+        if (!boardIsFluid()) { log("FluidNC upload: the selected board is not FluidNC"); return; }
+        if (streaming) { log("FluidNC upload: a job is running"); return; }
+        if (xmodem != null || System.currentTimeMillis() < quietUntilMs) { log("FluidNC upload: a transfer is already running"); return; }
+        if (!manualQueue.isEmpty() || !inFlight.isEmpty()) { log("FluidNC upload: wait until the board has answered all commands"); return; }
+        if (content.length == 0 || content.length > 256 * 1024) { log("FluidNC upload: file size " + content.length + " bytes is not sensible"); return; }
+        final SerialLink link = port;
+        log("FluidNC upload: " + name + " (" + content.length + " bytes) via XMODEM…");
+        RemoteLog.i("fluidnc", "xmodem upload " + name + " " + content.length + " bytes");
+        xmodem = new XmodemSender(content, new XmodemSender.Io() {
+            @Override public void write(byte[] d) {
+                writer.execute(() -> { try { link.write(d, 2000); } catch (Exception e) { RemoteLog.e("fluidnc", "xmodem write", e); } });
+            }
+            @Override public void progress(int sent, int total) {
+                if (fluidUploadStatus != null) fluidUploadStatus.setText("Uploading " + name + ": packet " + sent + " / " + total);
+            }
+            @Override public void finished(boolean ok, String message) {
+                xmodem = null;
+                ui.removeCallbacks(xmodemWatchdog);
+                String m = ok ? "✔ " + name + " uploaded (" + message + "). Restart FluidNC ($Bye) to load a new config.yaml."
+                        : "✖ Upload of " + name + " failed: " + message;
+                log("FluidNC upload: " + m);
+                RemoteLog.i("fluidnc", "xmodem " + (ok ? "ok " : "failed ") + message);
+                if (fluidUploadStatus != null) fluidUploadStatus.setText(m);
+                // the receiver ends with flushinput(): it drops input until 1.5 s of silence, and any byte
+                // (our status poll) restarts that wait – stay quiet so FluidNC returns to normal
+                quietUntilMs = System.currentTimeMillis() + 2500;
+            }
+        });
+        DebugLog.cnc(">> $Xmodem/Receive=" + name);
+        writeRaw(("$Xmodem/Receive=" + name + "\n").getBytes(StandardCharsets.US_ASCII));
+        ui.postDelayed(xmodemWatchdog, 5000);
+    }
+
+    private void xmodemBytes(byte[] data) {
+        ui.removeCallbacks(xmodemWatchdog);
+        xmodem.onBytes(data);
+        if (xmodem != null) ui.postDelayed(xmodemWatchdog, 3000);
     }
 
     @Override
@@ -430,8 +524,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         List<UsbSerialDriver> mine = new ArrayList<>();
         for (UsbSerialDriver d : all) if (driverIsBoard(d, b)) mine.add(d);
         if (mine.isEmpty() && !all.isEmpty()) {
-            String other = BOARD_BLUEPILL.equals(b) ? BOARD_PROMINI : BOARD_BLUEPILL;
             UsbSerialDriver d0 = all.get(0);
+            String other = guessBoard(d0);
             log("Settings say " + boardName(b) + ", but the USB device looks like a " + boardName(other) + " (" + describe(d0) + ")");
             new AlertDialog.Builder(this)
                     .setTitle("Different board plugged in")
@@ -464,10 +558,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 .show();
     }
 
-    /** Default drivers plus grblHAL's Blue Pill USB serial (STM32 Virtual ComPort, CDC ACM). */
+    /** Default drivers plus grblHAL's Blue Pill USB serial (STM32 Virtual ComPort, CDC ACM) and FluidNC's CH340K / CH9102. */
     private static UsbSerialProber serialProber() {
         com.hoho.android.usbserial.driver.ProbeTable t = UsbSerialProber.getDefaultProbeTable();
         t.addProduct(DfuFlasher.VID_ST, DfuFlasher.PID_ST_VCP, com.hoho.android.usbserial.driver.CdcAcmSerialDriver.class);
+        // FluidNC ESP32 boards: CH340K (1A86:7522, opened by Ch340Link) or CH9102 (1A86:55D4, CDC ACM)
+        t.addProduct(VID_CH340, 0x7522, com.hoho.android.usbserial.driver.Ch34xSerialDriver.class);
+        t.addProduct(VID_CH340, 0x55D4, com.hoho.android.usbserial.driver.CdcAcmSerialDriver.class);
         return new UsbSerialProber(t);
     }
 
@@ -521,8 +618,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             log("Could not open USB device (openDevice returned null)");
             return;
         }
-        final int baud = Integer.parseInt((String) baudSpinner.getSelectedItem());   // ignored by native USB (Blue Pill)
-        final boolean ch340 = device.getVendorId() == 0x1A86;
+        // ignored by native USB (Blue Pill); FluidNC always runs at 115200
+        final int baud = boardIsFluid() ? FLUIDNC_BAUD : Integer.parseInt((String) baudSpinner.getSelectedItem());
+        final boolean ch340 = device.getVendorId() == VID_CH340 && device.getProductId() != 0x55D4;   // CH9102 is CDC ACM
         gotData = false;
         writeFailures = 0;
         opening = true;
@@ -559,13 +657,22 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (driver.getDevice().getVendorId() == DfuFlasher.VID_ST) {
             log("Blue Pill (native USB) – sending a soft reset");
             ui.postDelayed(() -> { if (port == link) writeRaw(new byte[]{0x18}); }, 300);
+        } else if (boardIsFluid()) {
+            // DTR and RTS are both asserted, so the ESP32 auto-reset circuit leaves it running: ask for the banner
+            log("FluidNC (ESP32) – sending a soft reset");
+            ui.postDelayed(() -> { if (port == link) writeRaw(new byte[]{0x18}); }, 300);
         }
         ui.postDelayed(() -> {
             if (port == link && !gotData) log("Warning: no data from the " + boardName(board()) + " yet (expected Grbl banner)");
         }, 4000);
         ui.postDelayed(statusPoll, 1500);
         // learn the rapid rate for time estimates
-        ui.postDelayed(() -> { if (port == link) { queueSilent("$$"); queueSilent("$I"); } }, 2000);
+        ui.postDelayed(() -> {
+            if (port != link) return;
+            queueSilent("$$");
+            queueSilent("$I");
+            if (boardIsFluid()) queryFluidSettings();
+        }, 2000);
         updateButtons();
         updateChips();
         publishStatus(true);
@@ -573,6 +680,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     private void disconnect() {
         ui.removeCallbacks(statusPoll);
+        if (xmodem != null) xmodem.cancel();
         if (streaming) {
             if (endResult == null) { endResult = "disconnected"; endDetail = "the USB link to the controller closed"; }
             finishRun(false);
@@ -622,14 +730,22 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             gotData = true;
             RemoteLog.i("usb", "first data received (" + data.length + " bytes)");
         }
+        EspFlasher ef = espFlasher;
+        if (ef != null) { ef.onBytes(data); return; }       // bootloader frames, straight from the reader thread
         String s = new String(data, StandardCharsets.US_ASCII);
         ui.post(() -> {
+            if (xmodem != null) { xmodemBytes(data); return; }
+            if (espFlasher != null) return;                 // handled on the reader thread below
             for (int i = 0; i < s.length(); i++) {
                 char c = s.charAt(i);
                 if (c == '\n') {
-                    String line = rxLine.toString().trim();
+                    String raw = rxLine.toString().replaceAll("\\s+$", "");
                     rxLine.setLength(0);
-                    if (!line.isEmpty()) handleLine(line);
+                    String line = raw.trim();
+                    if (line.isEmpty()) continue;
+                    // indented text (FluidNC's YAML from $CD or $LocalFS/Show) is never a protocol line: keep its indent
+                    if (raw.charAt(0) == ' ') { DebugLog.cnc("<< " + raw); log("<< " + raw); continue; }
+                    handleLine(line);
                 } else if (c != '\r') {
                     rxLine.append(c);
                 }
@@ -691,9 +807,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             updateProgress();
             return;
         }
-        java.util.regex.Matcher sm = SETTING_LINE.matcher(line);
+        String fluid = fluidToGrbl(line);
+        String setting = fluid != null ? fluid : line;
+        java.util.regex.Matcher sm = SETTING_LINE.matcher(setting);
         if (sm.matches()) grblSettings.put("$" + sm.group(1), sm.group(2));
-        if (limits.apply(line) && !streaming) {
+        if (limits.apply(setting) && !streaming) {
             // machine settings changed: redo the estimate once the $$ report is complete
             ui.removeCallbacks(reparse);
             ui.postDelayed(reparse, 600);
@@ -707,6 +825,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 finishRun(false);
             }
             resetStreamState();
+            checkBannerBoard(line);
         }
         if (line.startsWith("[VER:") || line.startsWith("[OPT:")) {
             String v = line.substring(5, line.length() - (line.endsWith("]") ? 1 : 0));
@@ -727,26 +846,41 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         log("<< " + line);
     }
 
+    /** "Grbl 3.x [FluidNC v3.x …]" says FluidNC; offer to switch when Settings name another CH340 board. */
+    private void checkBannerBoard(String banner) {
+        boolean fluid = banner.contains("FluidNC");
+        if (fluid == boardIsFluid() || boardIsBlue()) return;
+        String other = fluid ? BOARD_FLUIDNC : BOARD_PROMINI;
+        log("The banner says " + boardName(other) + ", but Settings say " + boardName(board()));
+        new AlertDialog.Builder(this)
+                .setTitle("Different board connected")
+                .setMessage("Settings: " + boardName(board()) + "\nBanner: " + banner
+                        + "\n\nSwitch the controller board to " + boardName(other) + "?")
+                .setPositiveButton("Switch", (dlg, w) -> setBoard(other))
+                .setNegativeButton("Keep", null)
+                .show();
+    }
+
     private void parseStatus(String line) {
         String body = line.substring(1, line.endsWith(">") ? line.length() - 1 : line.length());
         String[] fields = body.split("\\|");
         String prevState = machineState;
         machineState = fields[0];
         boolean haveWpos = false;
-        float[] w = new float[3];
+        float[] w = new float[4];
         for (int i = 1; i < fields.length; i++) {
             String f = fields[i];
-            if (f.startsWith("MPos:")) parseXYZ(f.substring(5), mpos);
-            else if (f.startsWith("WPos:")) { parseXYZ(f.substring(5), w); haveWpos = true; }
+            if (f.startsWith("MPos:")) statusAxes = parseXYZ(f.substring(5), mpos);
+            else if (f.startsWith("WPos:")) { statusAxes = parseXYZ(f.substring(5), w); haveWpos = true; }
             else if (f.startsWith("WCO:")) parseXYZ(f.substring(4), wco);
         }
         if (haveWpos) {
-            for (int i = 0; i < 3; i++) mpos[i] = w[i] + wco[i];
+            for (int i = 0; i < 4; i++) mpos[i] = w[i] + wco[i];
         } else {
-            for (int i = 0; i < 3; i++) w[i] = mpos[i] - wco[i];
+            for (int i = 0; i < 4; i++) w[i] = mpos[i] - wco[i];
         }
         boolean moved = !wposKnown || Math.abs(w[0] - wpos[0]) > 1e-3 || Math.abs(w[1] - wpos[1]) > 1e-3;
-        System.arraycopy(w, 0, wpos, 0, 3);
+        System.arraycopy(w, 0, wpos, 0, 4);
         wposKnown = true;
 
         txtPos.setText(dro(w));
@@ -774,16 +908,20 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
     }
 
-    private static void parseXYZ(String s, float[] out) {
+    /** Fills out[] from "x,y,z[,a]"; returns the number of axes in the report. */
+    private static int parseXYZ(String s, float[] out) {
         String[] p = s.split(",");
-        for (int i = 0; i < 3 && i < p.length; i++) {
+        for (int i = 0; i < out.length && i < p.length; i++) {
             try { out[i] = Float.parseFloat(p[i]); } catch (NumberFormatException ignored) { }
         }
+        return p.length;
     }
 
     /** Send queued manual commands first, then program lines, while Grbl's RX buffer has room. */
     private void pump() {
         if (port == null) return;
+        long quiet = quietUntilMs - System.currentTimeMillis();
+        if (quiet > 0) { ui.removeCallbacks(pumpLater); ui.postDelayed(pumpLater, quiet); return; }
         while (true) {
             String line;
             boolean fromProgram;
@@ -818,6 +956,17 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     }
 
     /** Internal command whose output is not echoed to the console. */
+    /** FluidNC: read steps/mm, max rate, acceleration and travel of X/Y/Z from config (see fluidToGrbl). */
+    private void queryFluidSettings() {
+        for (char a : new char[]{'x', 'y', 'z'}) for (String item : FLUID_ITEMS) queueSilent("$/axes/" + a + "/" + item);
+    }
+
+    /** Typed commands go out in upper case (Grbl's $ commands need it), except FluidNC's $ commands: their
+     *  file names, SSIDs and passwords are case-sensitive ($CD=config.yaml must not become CONFIG.YAML). */
+    private String typedCase(String cmd) {
+        return boardIsFluid() && cmd.startsWith("$") ? cmd : cmd.toUpperCase(Locale.US);
+    }
+
     private void queueSilent(String cmd) {
         if (port == null) return;
         silentAcks++;
@@ -834,7 +983,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             writeRaw(cmd.getBytes(StandardCharsets.US_ASCII));
             log(">> " + cmd);
         } else {
-            queueCommand(cmd.toUpperCase(Locale.US));
+            queueCommand(typedCase(cmd));
         }
     }
 
@@ -1376,8 +1525,26 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
         if (requestCode == REQ_OPEN_FILE) {
             if (loadDocument(uri, true) && page != NAV_CONTROL) showPage(NAV_CONTROL);
+        } else if (requestCode == REQ_FLUID_UPLOAD) {
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                byte[] content = readBytes(in);
+                String name = displayName(uri).replaceAll("[^A-Za-z0-9._-]", "_");
+                new AlertDialog.Builder(this)
+                        .setTitle("Upload to FluidNC?")
+                        .setMessage(name + " (" + content.length + " bytes) goes to the board's local filesystem as \"" + name
+                                + "\", replacing a file of that name. A new config.yaml is used after a restart ($Bye).")
+                        .setPositiveButton("Upload", (dlg, w) -> startFluidUpload(content, name))
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            } catch (Exception e) {
+                log("Could not read the file: " + e.getMessage());
+            }
         } else if (requestCode == REQ_FIRMWARE) {
             try (InputStream in = getContentResolver().openInputStream(uri)) {
+                if (fluidFw()) {
+                    confirmEspFlash(readBytes(in), displayName(uri), "from the tablet's storage");
+                    return;
+                }
                 if (blue()) {
                     ByteArrayOutputStream bo = new ByteArrayOutputStream();
                     byte[] buf = new byte[8192];
@@ -1444,13 +1611,21 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     // ---------------------------------------------------------------- Controller board (Settings)
 
-    static final String BOARD_PROMINI = "promini", BOARD_BLUEPILL = "bluepill";
+    static final String BOARD_PROMINI = "promini", BOARD_BLUEPILL = "bluepill", BOARD_FLUIDNC = "fluidnc";
+    /** FluidNC's default UART speed; the ESP32 board ignores the baud spinner. */
+    static final int FLUIDNC_BAUD = 115200;
 
     /** The controller board chosen in Settings: decides which USB device Connect opens and which firmware is offered. */
     private String board() { return getPreferences(MODE_PRIVATE).getString("board", BOARD_PROMINI); }
     private boolean boardIsBlue() { return BOARD_BLUEPILL.equals(board()); }
+    private boolean boardIsFluid() { return BOARD_FLUIDNC.equals(board()); }
     private static String boardName(String b) {
-        return BOARD_BLUEPILL.equals(b) ? "STM32F103C8T6 Blue / Black Pill" : "Arduino Pro Mini";
+        if (BOARD_BLUEPILL.equals(b)) return "STM32F103C8T6 Blue / Black Pill";
+        if (BOARD_FLUIDNC.equals(b)) return "FluidNC ESP32 6-axis";
+        return "Arduino Pro Mini";
+    }
+    private static String boardShort(String b) {
+        return BOARD_BLUEPILL.equals(b) ? "Blue Pill" : BOARD_FLUIDNC.equals(b) ? "FluidNC" : "Pro Mini";
     }
 
     private void setBoard(String b) {
@@ -1461,9 +1636,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         applyBoardToUi();
     }
 
-    /** Pro Mini: CH340 at the chosen baud (38400 for our 8 MHz build). Blue Pill: native USB, baud is ignored. */
+    /** Pro Mini: CH340 at the chosen baud (38400 for our 8 MHz build). Blue Pill: native USB, baud is ignored.
+     *  FluidNC: CH340K / CP2102 at a fixed 115200. */
     private void applyBoardToUi() {
-        if (boardIsBlue()) {
+        if (!BOARD_PROMINI.equals(board())) {
             baudSpinner.setEnabled(false);
             baudSpinner.setVisibility(View.GONE);
         } else {
@@ -1472,12 +1648,25 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
     }
 
-    /** Does this USB serial device belong to the given board? CH340 = Pro Mini, ST VCP 0483:5740 = Blue Pill. */
+    /** Does this USB serial device belong to the given board? ST VCP 0483:5740 = Blue Pill; CH340 = Pro Mini or
+     *  FluidNC (the ESP32 board uses a CH340K; some versions a CP2102), told apart later by the banner. */
     private static boolean driverIsBoard(UsbSerialDriver d, String b) {
-        boolean st = d.getDevice().getVendorId() == DfuFlasher.VID_ST;
-        return BOARD_BLUEPILL.equals(b) == st;
+        int vid = d.getDevice().getVendorId();
+        if (BOARD_BLUEPILL.equals(b)) return vid == DfuFlasher.VID_ST;
+        if (BOARD_FLUIDNC.equals(b)) return vid == VID_CH340 || vid == VID_CP210X;
+        return vid != DfuFlasher.VID_ST;
+    }
+    static final int VID_CH340 = 0x1A86, VID_CP210X = 0x10C4;
+
+    /** Best guess which board a USB serial device is when it does not match the selected one. */
+    private static String guessBoard(UsbSerialDriver d) {
+        int vid = d.getDevice().getVendorId();
+        if (vid == DfuFlasher.VID_ST) return BOARD_BLUEPILL;
+        if (vid == VID_CP210X) return BOARD_FLUIDNC;
+        return BOARD_PROMINI;          // a CH340 could also be FluidNC: the banner check offers that switch
     }
     private boolean blue() { return "bluepill".equals(fwTarget); }
+    private boolean fluidFw() { return BOARD_FLUIDNC.equals(fwTarget); }
 
     /** Settings → Firmware: installed firmware, list of builds on the backoffice, download + flash with progress. */
     private View buildFirmwarePage(String target) {
@@ -1489,10 +1678,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
         root.setOrientation(android.widget.LinearLayout.VERTICAL);
         LinearLayout head = Ui.row(this);
-        head.addView(Ui.heading(this, "Firmware update", blue() ? "(B) STM32F103C8T6 Blue / Black Pill – Grbl 1.1f over USB DFU"
+        boolean fluid = BOARD_FLUIDNC.equals(target);
+        head.addView(Ui.heading(this, "Firmware update", fluid ? "(C) FluidNC ESP32 6-axis – over USB through the ESP32 ROM bootloader"
+                : blue() ? "(B) STM32F103C8T6 Blue / Black Pill – Grbl 1.1f over USB DFU"
                 : "(A) Arduino Pro Mini – Grbl 1.1h over the Arduino bootloader"), Ui.weight(1));
-        for (String b : new String[]{BOARD_PROMINI, BOARD_BLUEPILL}) {
-            Button t = Ui.button(this, BOARD_BLUEPILL.equals(b) ? "(B) Blue / Black Pill" : "(A) Pro Mini", b.equals(target) ? 1 : 0);
+        for (String b : new String[]{BOARD_PROMINI, BOARD_BLUEPILL, BOARD_FLUIDNC}) {
+            Button t = Ui.button(this, BOARD_BLUEPILL.equals(b) ? "(B) Blue / Black Pill"
+                    : BOARD_FLUIDNC.equals(b) ? "(C) FluidNC" : "(A) Pro Mini", b.equals(target) ? 1 : 0);
             t.setOnClickListener(v -> { if (!fwBusy && !b.equals(fwTarget)) showSection(SEC_FIRMWARE, b); });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.setMarginStart(Ui.dp(this, 8));
@@ -1510,6 +1702,31 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         fwInstalled.setPadding(0, (int) (6 * dp), 0, (int) (10 * dp));
         root.addView(fwInstalled);
         updateInstalledText();
+
+        if (fluid) {
+            TextView how = Ui.text(this, "Flashing uses the ESP32's own serial bootloader over the board's USB (CH340K), like esptool: "
+                    + "the app resets the board into the bootloader with DTR/RTS, writes bootloader, partition table, FluidNC and "
+                    + "its file system (config.yaml + WebUI), checks every part with MD5 and restarts the board. Takes about "
+                    + "a minute. Stay connected and keep the machine idle. If the bootloader does not answer, hold BOOT while "
+                    + "tapping Flash.\nThe builds below are for the Macrobase 6-axis ESP32 card (ESP32-WROOM, 4 MB, I2S "
+                    + "step outputs) and include this router's config.yaml.", 13, 0xFFF0C050);
+            how.setPadding(0, 0, 0, (int) (8 * dp));
+            root.addView(how);
+            LinearLayout upRow = Ui.row(this);
+            fluidUploadStatus = Ui.text(this, "Or upload one file (e.g. an edited config.yaml) to the board's file system (XMODEM). "
+                    + "Read the current one with $LocalFS/Show=config.yaml; a new config.yaml is used after $Bye.", 12, Ui.MUTED);
+            upRow.addView(fluidUploadStatus, Ui.weight(1));
+            Button upload = Ui.button(this, "Upload file…", 0);
+            upload.setOnClickListener(v -> {
+                if (port == null) { fluidUploadStatus.setText("Connect to the board first."); return; }
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                startActivityForResult(intent, REQ_FLUID_UPLOAD);
+            });
+            upRow.addView(upload);
+            root.addView(upRow, Ui.margins(this, 0, 0, 0, 8));
+        }
 
         if (blue()) {
             TextView how = new TextView(this);
@@ -1627,7 +1844,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             boolean isBlue = pendingDriver != null && pendingDriver.getDevice().getVendorId() == DfuFlasher.VID_ST;
             String[] o = opt.split(",");
             fwInstalled.setText("Installed: Grbl " + fwVersion + " · options " + flags
-                    + (isBlue ? (fwVersion.startsWith("1.1") ? " (Blue Pill, PB13 = spindle enable)" : " (grblHAL on Blue Pill)")
+                    + (fwVersion.contains("FluidNC") ? " (ESP32, pins from config.yaml)" : isBlue ? (fwVersion.startsWith("1.1") ? " (Blue Pill, PB13 = spindle enable)" : " (grblHAL on Blue Pill)")
                             : flags.contains("D") ? " (D13 = spindle enable)" : " (no spindle-enable pin)")
                     + (o.length >= 3 ? " · planner " + o[1].trim() + " blocks, RX " + o[2].trim() + " bytes" : "")
                     + "\nBoard: " + board);
@@ -1636,12 +1853,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     private void updateFirmwareButtons() {
         if (fwDialog == null) return;
-        boolean canFlash = !fwBusy && !streaming && (blue() || pendingDriver != null);
+        boolean canFlash = !fwBusy && !streaming && (blue() || (fluidFw() ? port != null : pendingDriver != null));
         fwFlashBtn.setEnabled(canFlash && fwSelected >= 0);
         fwFileBtn.setEnabled(canFlash);
         fwRefreshBtn.setEnabled(!fwBusy);
         fwList.setEnabled(!fwBusy);
-        if (!fwBusy && !blue() && pendingDriver == null) fwStatus.setText("Connect to the Arduino first – flashing needs its USB device.");
+        if (!fwBusy && fluidFw() && port == null) fwStatus.setText("Connect to the FluidNC board first – flashing uses its USB serial link.");
+        else if (!fwBusy && !blue() && !fluidFw() && pendingDriver == null) fwStatus.setText("Connect to the Arduino first – flashing needs its USB device.");
     }
 
     private void loadFirmwareList() {
@@ -1680,7 +1898,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         fwStatus.setText("Downloading " + f.optString("file") + "…");
         fwBar.setVisibility(View.VISIBLE);
         fwBar.setIndeterminate(true);
-        if (blue()) {
+        if (blue() || fluidFw()) {
+            final boolean esp = fluidFw();
             worker.execute(() -> {
                 try {
                     byte[] bin = RemoteLog.getBytes(f.optString("url"));
@@ -1693,8 +1912,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                         fwBar.setProgress(0);
                         fwStatus.setText("Downloaded " + bin.length + " bytes, SHA-256 OK.");
                         updateFirmwareButtons();
-                        confirmDfuFlash(bin, f.optString("name"), f.optString("version")
-                                + (f.optString("notes").isEmpty() ? "" : "\n" + f.optString("notes")));
+                        String details = f.optString("version") + (f.optString("notes").isEmpty() ? "" : "\n" + f.optString("notes"));
+                        if (esp) confirmEspFlash(bin, f.optString("name"), details);
+                        else confirmDfuFlash(bin, f.optString("name"), details);
                     });
                 } catch (Exception e) {
                     ui.post(() -> {
@@ -1766,6 +1986,154 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 .setPositiveButton("Flash", (d, w) -> startFlash(img, name))
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    /**
+     * FluidNC package: a zip of "0x<offset>.bin" entries (bootloader 0x1000, partitions 0x8000, boot_app0 0xe000,
+     * firmware 0x10000, littlefs 0x3d0000), written by the ESP32 ROM bootloader (EspFlasher).
+     */
+    static List<EspFlasher.Segment> espSegments(byte[] zip) throws java.io.IOException {
+        List<EspFlasher.Segment> segs = new ArrayList<>();
+        try (java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(zip))) {
+            java.util.zip.ZipEntry e;
+            while ((e = z.getNextEntry()) != null) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?:.*/)?0x([0-9a-fA-F]+)\\.bin").matcher(e.getName());
+                if (e.isDirectory() || !m.matches()) continue;
+                segs.add(new EspFlasher.Segment(Integer.parseInt(m.group(1), 16), readBytes(z)));
+            }
+        }
+        segs.sort((a, b) -> Integer.compare(a.offset, b.offset));
+        if (segs.isEmpty()) throw new java.io.IOException("no 0x<offset>.bin entries – not a FluidNC package (.zip)");
+        int end = 0;
+        for (EspFlasher.Segment sg : segs) {
+            if (sg.offset < end) throw new java.io.IOException(String.format(Locale.US, "overlapping parts at 0x%X", sg.offset));
+            end = sg.offset + sg.data.length;
+            if (end > EspFlasher.FLASH_SIZE) throw new java.io.IOException(String.format(Locale.US, "part at 0x%X goes beyond 4 MB", sg.offset));
+        }
+        EspFlasher.Segment first = segs.get(0);
+        if (first.offset != 0x1000 || first.data.length < 1 || (first.data[0] & 0xFF) != 0xE9) {
+            throw new java.io.IOException("no ESP32 bootloader image at 0x1000");
+        }
+        boolean app = false;
+        for (EspFlasher.Segment sg : segs) if (sg.offset == 0x10000 && (sg.data[0] & 0xFF) == 0xE9) app = true;
+        if (!app) throw new java.io.IOException("no ESP32 application image at 0x10000");
+        return segs;
+    }
+
+    private void confirmEspFlash(byte[] zip, String name, String details) {
+        final List<EspFlasher.Segment> segs;
+        try {
+            segs = espSegments(zip);
+        } catch (Exception e) {
+            if (fwStatus != null) fwStatus.setText("Not a usable FluidNC package: " + e.getMessage());
+            new AlertDialog.Builder(this).setTitle("Not a usable FluidNC package").setMessage(name + "\n\n" + e.getMessage())
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        StringBuilder parts = new StringBuilder();
+        for (EspFlasher.Segment sg : segs) parts.append(String.format(Locale.US, "0x%06X  %,d bytes\n", sg.offset, sg.data.length));
+        new AlertDialog.Builder(this)
+                .setTitle("Flash FluidNC?")
+                .setMessage(name + "\n" + details + "\n\n" + parts
+                        + "\nThe board restarts into its bootloader, the parts are written and checked, then it restarts with the "
+                        + "new firmware. Its file system is replaced too (config.yaml from this package; Wi-Fi settings are "
+                        + "cleared). Keep the USB cable in and the machine idle.")
+                .setPositiveButton("Flash", (d, w) -> startEspFlash(segs, name))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private EspFlasher espFlasher;
+
+    /** Resets the FluidNC board into its ROM bootloader, reads the chip id and MAC, and restarts it. Writes nothing. */
+    private void startEspProbe() {
+        if (streaming || port == null || espFlasher != null || !boardIsFluid()) { log("ESP probe: connect to the FluidNC board first (idle)"); return; }
+        final SerialLink link = port;
+        final UsbSerialDriver driver = pendingDriver;
+        ui.removeCallbacks(statusPoll);
+        log("ESP probe: resetting into the bootloader…");
+        espFlasher = new EspFlasher(new EspFlasher.Port() {
+            @Override public void write(byte[] d) throws java.io.IOException { link.write(d, 5000); }
+            @Override public void setDtrRts(boolean dtr, boolean rts) throws java.io.IOException { link.setDtrRts(dtr, rts); }
+            @Override public void setBaud(int b) throws java.io.IOException { link.setBaud(b); }
+        }, new EspFlasher.Progress() {
+            @Override public void status(String m) { ui.post(() -> log("ESP probe: " + m)); }
+            @Override public void progress(long done, long total) { }
+        });
+        new Thread(() -> {
+            String r;
+            try {
+                r = "bootloader OK – " + espFlasher.probe();
+            } catch (Exception e) {
+                r = "failed: " + e.getMessage();
+                try { espFlasher.hardReset(); } catch (Exception ignored) { }
+            }
+            final String res = r;
+            RemoteLog.i("esp", "probe " + res);
+            ui.post(() -> {
+                espFlasher = null;
+                log("ESP probe: " + res);
+                if (port == link) disconnect();
+                if (driver != null) ui.postDelayed(() -> { if (port == null && !opening) connect(driver); }, 3000);
+            });
+        }, "esp-probe").start();
+    }
+
+    private void startEspFlash(List<EspFlasher.Segment> segs, String name) {
+        if (streaming || port == null || espFlasher != null) return;
+        final SerialLink link = port;
+        final UsbSerialDriver driver = pendingDriver;
+        RemoteLog.i("esp", "start: " + name);
+        log("FluidNC flash: " + name);
+        ui.removeCallbacks(statusPoll);
+        fwBusy = true;
+        updateFirmwareButtons();
+        final TextView status = fwStatus;
+        final ProgressBar bar = fwBar;
+        bar.setVisibility(View.VISIBLE);
+        bar.setIndeterminate(true);
+        status.setText("Resetting the board into its bootloader…");
+        espFlasher = new EspFlasher(new EspFlasher.Port() {
+            @Override public void write(byte[] d) throws java.io.IOException { link.write(d, 5000); }
+            @Override public void setDtrRts(boolean dtr, boolean rts) throws java.io.IOException { link.setDtrRts(dtr, rts); }
+            @Override public void setBaud(int b) throws java.io.IOException { link.setBaud(b); }
+        }, new EspFlasher.Progress() {
+            @Override public void status(String m) {
+                RemoteLog.i("esp", m);
+                ui.post(() -> { status.setText(m); log("FluidNC flash: " + m); });
+            }
+            @Override public void progress(long done, long total) {
+                ui.post(() -> { bar.setIndeterminate(false); bar.setProgress((int) (1000 * done / total)); });
+            }
+        });
+        new Thread(() -> {
+            String result;
+            boolean ok = false;
+            try {
+                espFlasher.flash(segs, 460800);
+                ok = true;
+                result = "FluidNC installed and verified: " + name;
+            } catch (Exception e) {
+                result = "FluidNC flash failed: " + e.getMessage();
+                RemoteLog.e("esp", result, e);
+                try { espFlasher.hardReset(); } catch (Exception ignored) { }
+            }
+            try { link.setBaud(FLUIDNC_BAUD); } catch (Exception ignored) { }
+            final String r = result;
+            final boolean success = ok;
+            ui.post(() -> {
+                espFlasher = null;
+                fwBusy = false;
+                bar.setVisibility(View.INVISIBLE);
+                status.setText(r + (success ? " – reconnecting…" : ""));
+                log(r);
+                RemoteLog.i("esp", r);
+                updateFirmwareButtons();
+                // start over cleanly: the new firmware boots in ~2 s, then the usual banner / $I / settings queries
+                if (port == link) disconnect();
+                if (driver != null) ui.postDelayed(() -> { if (port == null && !opening) connect(driver); }, 3500);
+            });
+        }, "esp-flash").start();
     }
 
     private void confirmDfuFlash(byte[] bin, String name, String details) {
@@ -2157,6 +2525,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     @Override public boolean connected() { return port != null; }
                     @Override public boolean busy() { return streaming; }
                     @Override public String machineState() { return machineState; }
+                    @Override public float workPos(int axis) { return wpos[axis]; }
+                    @Override public int axes() { return statusAxes; }
+                    @Override public boolean proMini() { return BOARD_PROMINI.equals(board()); }
+                    @Override public boolean fluidnc() { return boardIsFluid(); }
+                    @Override public boolean fluidM150() { return boardIsFluid() && fwVersion != null && fwVersion.contains("-wcr"); }
+                    @Override public void realtime(byte b) { writeRaw(new byte[]{b}); }
+                    @Override public void reset() { softReset(); }
                     @Override public java.util.Map<String, String> grblSettings() { return grblSettings; }
                     @Override public void send(String cmd) { queueCommand(cmd); }
                     @Override public void log(String msg) { MainActivity.this.log(msg); }
@@ -2202,7 +2577,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     private void updateChips() {
         if (chipUsb == null) return;
-        String boardShort = boardIsBlue() ? "Blue Pill" : "Pro Mini";
+        String boardShort = boardShort(board());
         if (port != null) Ui.setChip(chipUsb, boardShort, Ui.OK);
         else if (opening) Ui.setChip(chipUsb, "Opening…", Ui.WARN);
         else Ui.setChip(chipUsb, boardShort + " · off", Ui.MUTED);
@@ -2296,6 +2671,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     .append(fwVersion != null ? " · Grbl " + fwVersion : "")
                     .append(" · ").append(machineState.isEmpty() ? "no status yet" : machineState)
                     .append(" · last status ").append(now - lastStatusMs).append(" ms ago");
+            String d = port.diag();
+            if (!d.isEmpty()) b.append("\nUSB         ").append(d);
         }
         return b.toString();
     }
@@ -2374,9 +2751,15 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 if (line.equals("!")) { feedHold("backoffice"); r.done(true, "feed hold sent"); return; }
                 if (line.equals("~")) { writeRaw(new byte[]{'~'}); r.done(true, "resume sent"); return; }
                 if (line.equals("?")) { r.done(true, linkSummary().replace("\n", " | ")); return; }
+                if (line.matches("0x[0-9A-Fa-f]{2}")) {           // debug: one raw byte, e.g. 0x11 (XON)
+                    writeRaw(new byte[]{(byte) Integer.parseInt(line.substring(2), 16)});
+                    r.done(true, "raw byte " + line + " sent");
+                    return;
+                }
                 if (streaming) { r.done(false, "a job is running – only !, ~ and ? are accepted"); return; }
-                queueCommand(line.toUpperCase(Locale.US));
-                r.done(true, "sent " + line.toUpperCase(Locale.US) + " – the reply shows in the console");
+                String sent = typedCase(line);
+                queueCommand(sent);
+                r.done(true, "sent " + sent + " – the reply shows in the console");
                 return;
             }
             case "load":
@@ -2480,6 +2863,15 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     /** What the app expects from each board's firmware (see README.md and firmware/bluepill/BUILD.md). */
     private static String boardProfile(String b) {
+        if (BOARD_FLUIDNC.equals(b)) {
+            return "Firmware: FluidNC (bdring/FluidNC, Grbl 1.1 protocol), machine set up in config.yaml\n"
+                    + "MCU: ESP32 dual core, 240 MHz · Macrobase 6-axis board, up to 6 axes (X Y Z A B C)\n"
+                    + "USB: CH340K serial at " + FLUIDNC_BAUD + " baud (baud setting ignored) · also Wi-Fi / Bluetooth\n"
+                    + "Flashing: ESP32 ROM bootloader over USB (Settings → Firmware), woodcncrouter build v4.1.1-wcr1 with M150\n"
+                    + "RX buffer: not reported – streams with 127 bytes\n"
+                    + "Pins: steps/dir/enable through I2S shift registers · spindle on/off GPIO12 · PWM GPIO27 · "
+                    + "limits X GPIO33, Y GPIO32, Z GPIO35 · probe GPIO34 · feed hold GPIO36";
+        }
         if (BOARD_BLUEPILL.equals(b)) {
             return "Firmware: Grbl 1.1f (robomechs STM32F103 port), image at 0x08002000\n"
                     + "MCU: STM32F103C8T6, 72 MHz, 64 KB flash · settings in flash page 0x0800FC00\n"
@@ -2526,12 +2918,16 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         android.widget.RadioButton rbBlue = new android.widget.RadioButton(this);
         rbBlue.setId(View.generateViewId());
         rbBlue.setText("(B) STM32F103C8T6 Blue / Black Pill – Grbl 1.1f, native USB");
-        for (android.widget.RadioButton rb : new android.widget.RadioButton[]{rbPro, rbBlue}) {
+        android.widget.RadioButton rbFluid = new android.widget.RadioButton(this);
+        rbFluid.setId(View.generateViewId());
+        rbFluid.setText("(C) FluidNC ESP32 6-axis – CH340K USB serial, 115200");
+        for (android.widget.RadioButton rb : new android.widget.RadioButton[]{rbPro, rbBlue, rbFluid}) {
             rb.setTextColor(Ui.TEXT);
             rb.setTextSize(15);
             group.addView(rb);
         }
-        group.check(boardIsBlue() ? rbBlue.getId() : rbPro.getId());
+        java.util.function.IntSupplier checkedId = () -> boardIsBlue() ? rbBlue.getId() : boardIsFluid() ? rbFluid.getId() : rbPro.getId();
+        group.check(checkedId.getAsInt());
         boardCard.addView(group);
         TextView note = Ui.text(this, "Connect opens this board's USB device and Firmware offers its builds. "
                 + "A change takes effect at the next Connect.", 12, Ui.MUTED);
@@ -2601,10 +2997,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         group.setOnCheckedChangeListener((g, id) -> {
             if (streaming) {
                 log("Stop the running job before changing the board");
-                g.check(boardIsBlue() ? rbBlue.getId() : rbPro.getId());
+                g.check(checkedId.getAsInt());
                 return;
             }
-            setBoard(id == rbBlue.getId() ? BOARD_BLUEPILL : BOARD_PROMINI);
+            setBoard(id == rbBlue.getId() ? BOARD_BLUEPILL : id == rbFluid.getId() ? BOARD_FLUIDNC : BOARD_PROMINI);
             if (port != null) log("Disconnect and connect again to use the " + boardName(board()));
             loadLatestFirmware();
             updateSettingsInfo();
@@ -2709,7 +3105,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (port == null || pendingDriver == null) {
             s.append("not connected – tap Connect to read and check it");
         } else if (!driverIsBoard(pendingDriver, b)) {
-            String other = BOARD_BLUEPILL.equals(b) ? BOARD_PROMINI : BOARD_BLUEPILL;
+            String other = guessBoard(pendingDriver);
             s.append("⚠ the connected device (").append(describe(pendingDriver)).append(") is a ")
                     .append(boardName(other)).append(", not the selected board");
         } else if (fwVersion == null) {
@@ -2720,7 +3116,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         } else {
             String opt = fwOptions != null ? fwOptions : "";
             String[] o = opt.split(",");
-            s.append("Grbl ").append(fwVersion).append(" · options ").append(o[0])
+            s.append(fwVersion.contains("FluidNC") ? "" : "Grbl ").append(fwVersion).append(" · options ").append(o[0])
                     .append(o.length >= 3 ? " · planner " + o[1].trim() + " blocks · RX buffer " + o[2].trim() + " bytes" : "")
                     .append("\n").append(compatibility(b, fwVersion, o));
         }
@@ -2729,6 +3125,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     /** Checks the installed firmware against what this app needs: Grbl 1.1 protocol, a known RX buffer, the right board. */
     static String compatibility(String b, String version, String[] opt) {
+        if (version.contains("FluidNC")) {
+            if (!BOARD_FLUIDNC.equals(b)) return "⚠ This is FluidNC – select (C) FluidNC ESP32 as the controller board";
+            return "✓ Works with this app: FluidNC speaks the Grbl 1.1 protocol; RX buffer not reported, streams with 127 bytes";
+        }
+        if (BOARD_FLUIDNC.equals(b)) return "⚠ Not FluidNC – the selected board is (C) FluidNC ESP32";
         boolean grbl11 = version.startsWith("1.1");
         int rx = -1;
         if (opt.length >= 3) {
@@ -3100,7 +3501,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         btnConnect.setText(connected ? "Disconnect" : "Connect");
         btnConnect.setBackgroundResource(connected ? R.drawable.btn_tech : R.drawable.btn_accent);
         btnConnect.setTextColor(connected ? Ui.TEXT : Ui.ACCENT);
-        baudSpinner.setEnabled(!connected && !boardIsBlue());
+        baudSpinner.setEnabled(!connected && BOARD_PROMINI.equals(board()));
         btnRun.setEnabled(connected && !streaming && docLength() > 0);
         btnLoad.setEnabled(!streaming && docLength() > 0);
         for (int id : new int[]{R.id.btnNew, R.id.btnOpen, R.id.btnClose}) findViewById(id).setEnabled(!streaming);

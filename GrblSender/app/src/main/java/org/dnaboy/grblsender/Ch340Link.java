@@ -43,6 +43,9 @@ final class Ch340Link implements SerialLink {
     private final UsbEndpoint epIn;
     private final UsbEndpoint epOut;
     private volatile boolean running = true;
+    // reader diagnostics, shown in the remote "?" link summary
+    private volatile long reads, emptyReads, lastReadMs, waitStartMs, lastWriteMs;
+    private volatile String readerState = "starting";
     private Thread reader;
 
     private Ch340Link(UsbDeviceConnection conn, UsbInterface intf, UsbEndpoint in, UsbEndpoint out) {
@@ -153,8 +156,11 @@ final class Ch340Link implements SerialLink {
         try {
             while (running) {
                 buf.clear();
+                readerState = "queue";
                 if (!req.queue(buf)) throw new IOException("queueing USB read failed");
                 UsbRequest done = null;
+                readerState = "wait";
+                waitStartMs = System.currentTimeMillis();
                 while (running && done == null) {
                     try {
                         done = conn.requestWait(250);
@@ -163,8 +169,11 @@ final class Ch340Link implements SerialLink {
                     }
                 }
                 if (!running) break;
-                if (done != req) continue;
+                if (done != req) { readerState = "other request " + done; continue; }
                 int n = buf.position();
+                reads++;
+                lastReadMs = System.currentTimeMillis();
+                if (n == 0) emptyReads++;
                 if (n > 0) {
                     byte[] data = new byte[n];
                     buf.flip();
@@ -173,8 +182,10 @@ final class Ch340Link implements SerialLink {
                 }
             }
         } catch (Exception e) {
+            readerState = "died: " + e;
             if (running) listener.onRunError(e);
         } finally {
+            if (!readerState.startsWith("died")) readerState = "stopped";
             req.cancel();
             req.close();
         }
@@ -191,6 +202,21 @@ final class Ch340Link implements SerialLink {
     }
 
     @Override
+    public void setBaud(int baud) throws IOException {
+        int r = conn.controlTransfer(REQTYPE_OUT, REQ_WRITE_REG, REG_DIVISOR_PRESCALER, divisor(baud) | 0x80, null, 0, CTRL_TIMEOUT);
+        if (r < 0) throw new IOException("baud change to " + baud + " failed");
+    }
+
+    @Override
+    public String diag() {
+        long now = System.currentTimeMillis();
+        return "reader " + readerState + (reader != null && !reader.isAlive() ? " (thread ended)" : "")
+                + " · reads " + reads + " (" + emptyReads + " empty) · last read " + (lastReadMs == 0 ? "never" : (now - lastReadMs) + " ms ago")
+                + (readerState.equals("wait") ? " · waiting " + (now - waitStartMs) + " ms" : "")
+                + " · last write " + (lastWriteMs == 0 ? "never" : (now - lastWriteMs) + " ms ago");
+    }
+
+    @Override
     public void setDtrRts(boolean dtr, boolean rts) throws IOException {
         int bits = (dtr ? MCR_DTR : 0) | (rts ? MCR_RTS : 0);
         int r = conn.controlTransfer(REQTYPE_OUT, REQ_MODEM_CTRL, ~bits & 0xFF, 0, null, 0, CTRL_TIMEOUT);
@@ -203,6 +229,7 @@ final class Ch340Link implements SerialLink {
         while (off < data.length) {
             int len = Math.min(data.length - off, epOut.getMaxPacketSize() * 8);
             int n = conn.bulkTransfer(epOut, data, off, len, timeoutMs);
+            lastWriteMs = System.currentTimeMillis();
             if (n < 0) throw new IOException("bulk write failed at " + off + "/" + data.length);
             off += n;
         }

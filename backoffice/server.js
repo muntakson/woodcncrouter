@@ -746,7 +746,7 @@ async function handle(req, res) {
     const list = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
     return send(res, 200, list.sort((a, b) => b.published - a.published).map((f) => ({ ...f, url: `/firmware/${f.file}` })));
   }
-  if (isGet && /^\/firmware\/[\w.\-]+\.(hex|bin)$/.test(p)) {
+  if (isGet && /^\/firmware\/[\w.\-]+\.(hex|bin|zip)$/.test(p)) {
     const name = path.basename(p);
     return serveFile(res, path.join(FIRMWARE_DIR, name), {
       'Content-Type': 'application/octet-stream',

@@ -1,0 +1,820 @@
+From 68cf4765b238fe9f3035c6c432ca32ee8e9c4223 Mon Sep 17 00:00:00 2001
+From: jit <mtshon@gmail.com>
+Date: Mon, 12 Oct 2026 10:17:09 +0900
+Subject: [PATCH] woodcncrouter: M150 wiring check (1 kHz step pulses / DIR
+ level), router config.yaml, pin espressif32 6.12.0
+
+---
+ FluidNC/data/config.yaml             | 436 +++++++++++++++++----------
+ FluidNC/src/Diag.cpp                 | 225 ++++++++++++++
+ FluidNC/src/Diag.h                   |  13 +
+ FluidNC/src/Motors/MotorDriver.h     |   4 +
+ FluidNC/src/Motors/StandardStepper.h |   3 +
+ FluidNC/src/ProcessSettings.cpp      |   6 +
+ FluidNC/src/Protocol.cpp             |   2 +
+ FluidNC/src/Stepper.cpp              |   2 +
+ platformio.ini                       |   2 +-
+ 9 files changed, 536 insertions(+), 157 deletions(-)
+ create mode 100644 FluidNC/src/Diag.cpp
+ create mode 100644 FluidNC/src/Diag.h
+
+diff --git a/FluidNC/data/config.yaml b/FluidNC/data/config.yaml
+index 27008cf..3ef51e7 100644
+--- a/FluidNC/data/config.yaml
++++ b/FluidNC/data/config.yaml
+@@ -1,156 +1,280 @@
+-board: None
+-name: Default (Test Drive no I/O)
+-meta: 
+-stepping:
+-  engine: RMT
+-  idle_ms: 255
+-  pulse_us: 4
+-  dir_delay_us: 0
+-  disable_delay_us: 0
+-  segments: 12
+-
+-spi:
+-  miso_pin: NO_PIN
+-  mosi_pin: NO_PIN
+-  sck_pin: NO_PIN
+-
+-sdcard:
+-  cs_pin: NO_PIN
+-  card_detect_pin: NO_PIN
+-  frequency_hz: 8000000
+-
+-kinematics:
+-  Cartesian:
+-
+-axes:
+-  shared_stepper_disable_pin: NO_PIN
+-  shared_stepper_reset_pin: NO_PIN
+-  homing_runs: 2
+-  x:
+-    steps_per_mm: 80.000000
+-    max_rate_mm_per_min: 1000.000000
+-    acceleration_mm_per_sec2: 25.000000
+-    max_travel_mm: 1000.000000
+-    soft_limits: false
+-    motor0:
+-      limit_neg_pin: NO_PIN
+-      limit_pos_pin: NO_PIN
+-      limit_all_pin: NO_PIN
+-      hard_limits: false
+-      pulloff_mm: 1.000000
+-      null_motor:
+-
+-  y:
+-    steps_per_mm: 80.000000
+-    max_rate_mm_per_min: 1000.000000
+-    acceleration_mm_per_sec2: 25.000000
+-    max_travel_mm: 1000.000000
+-    soft_limits: false
+-    motor0:
+-      limit_neg_pin: NO_PIN
+-      limit_pos_pin: NO_PIN
+-      limit_all_pin: NO_PIN
+-      hard_limits: false
+-      pulloff_mm: 1.000000
+-      null_motor:
+-
+-  z:
+-    steps_per_mm: 80.000000
+-    max_rate_mm_per_min: 1000.000000
+-    acceleration_mm_per_sec2: 25.000000
+-    max_travel_mm: 1000.000000
+-    soft_limits: false
+-    motor0:
+-      limit_neg_pin: NO_PIN
+-      limit_pos_pin: NO_PIN
+-      limit_all_pin: NO_PIN
+-      hard_limits: false
+-      pulloff_mm: 1.000000
+-      null_motor:
+-
+-control:
+-  safety_door_pin: NO_PIN
+-  reset_pin: NO_PIN
+-  feed_hold_pin: NO_PIN
+-  cycle_start_pin: NO_PIN
+-  macro0_pin: NO_PIN
+-  macro1_pin: NO_PIN
+-  macro2_pin: NO_PIN
+-  macro3_pin: NO_PIN
+-  fault_pin: NO_PIN
+-  estop_pin: NO_PIN
+-
+-coolant:
+-  flood_pin: NO_PIN
+-  mist_pin: NO_PIN
+-  delay_ms: 0
+-
+-probe:
+-  pin: NO_PIN
+-  toolsetter_pin: NO_PIN
+-  check_mode_start: true
+-  hard_stop: false
+-
+-macros:
+-  startup_line0:
+-  startup_line1:
+-  Macro0:
+-  Macro1:
+-  Macro2:
+-  Macro3:
+-  after_homing:
+-  after_reset:
+-  after_unlock:
+-
+-start:
+-  must_home: false
+-  deactivate_parking: false
+-  check_limits: true
+-
+-parking:
+-  enable: false
+-  axis: Z
+-  target_mpos_mm: -5.000000
+-  rate_mm_per_min: 800.000000
+-  pullout_distance_mm: 5.000000
+-  pullout_rate_mm_per_min: 250.000000
+-
+-user_outputs:
+-  analog0_pin: NO_PIN
+-  analog1_pin: NO_PIN
+-  analog2_pin: NO_PIN
+-  analog3_pin: NO_PIN
+-  analog0_hz: 5000
+-  analog1_hz: 5000
+-  analog2_hz: 5000
+-  analog3_hz: 5000
+-  digital0_pin: NO_PIN
+-  digital1_pin: NO_PIN
+-  digital2_pin: NO_PIN
+-  digital3_pin: NO_PIN
+-  digital4_pin: NO_PIN
+-  digital5_pin: NO_PIN
+-  digital6_pin: NO_PIN
+-  digital7_pin: NO_PIN
+-
+-user_inputs:
+-  analog0_pin: NO_PIN
+-  analog1_pin: NO_PIN
+-  analog2_pin: NO_PIN
+-  analog3_pin: NO_PIN
+-  digital0_pin: NO_PIN
+-  digital1_pin: NO_PIN
+-  digital2_pin: NO_PIN
+-  digital3_pin: NO_PIN
+-  digital4_pin: NO_PIN
+-  digital5_pin: NO_PIN
+-  digital6_pin: NO_PIN
+-  digital7_pin: NO_PIN
+-
+-arc_tolerance_mm: 0.002000
+-junction_deviation_mm: 0.010000
+-verbose_errors: true
+-report_inches: false
+-enable_parking_override_control: false
+-use_line_numbers: false
+-planner_blocks: 16
++board: 6 Pack
++name: 6 Pack StepStick XYZABC
++meta:
++stepping:
++  engine: I2S_stream
++  idle_ms: 250
++  pulse_us: 4
++  dir_delay_us: 6
++  disable_delay_us: 0
++  segments: 12
++i2so:
++  bck_pin: gpio.22
++  data_pin: gpio.21
++  ws_pin: gpio.17
++spi:
++  miso_pin: gpio.19
++  mosi_pin: gpio.23
++  sck_pin: gpio.18
++sdcard:
++  cs_pin: gpio.5
++  card_detect_pin: NO_PIN
++  frequency_hz: 8000000
++kinematics:
++  Cartesian:
++axes:
++  shared_stepper_disable_pin: NO_PIN
++  shared_stepper_reset_pin: NO_PIN
++  x:
++    steps_per_mm: 81.489998
++    max_rate_mm_per_min: 1000.000000
++    acceleration_mm_per_sec2: 30.000000
++    max_travel_mm: 300.000000
++    soft_limits: false
++    homing:
++      cycle: 1
++      allow_single_axis: true
++      positive_direction: false
++      mpos_mm: 0.000000
++      feed_mm_per_min: 100.000000
++      seek_mm_per_min: 200.000000
++      settle_ms: 500
++      seek_scaler: 1.100000
++      feed_scaler: 1.100000
++    motor0:
++      limit_neg_pin: NO_PIN
++      limit_pos_pin: NO_PIN
++      limit_all_pin: gpio.33:low:pu
++      hard_limits: false
++      pulloff_mm: 1.000000
++      stepstick:
++        step_pin: I2SO.2
++        direction_pin: I2SO.1
++        disable_pin: I2SO.0
++        ms1_pin: NO_PIN
++        ms2_pin: NO_PIN
++        ms3_pin: I2SO.3
++        reset_pin: NO_PIN
++  y:
++    steps_per_mm: 81.489998
++    max_rate_mm_per_min: 1000.000000
++    acceleration_mm_per_sec2: 30.000000
++    max_travel_mm: 300.000000
++    soft_limits: false
++    homing:
++      cycle: 1
++      allow_single_axis: true
++      positive_direction: true
++      mpos_mm: 0.000000
++      feed_mm_per_min: 100.000000
++      seek_mm_per_min: 200.000000
++      settle_ms: 500
++      seek_scaler: 1.100000
++      feed_scaler: 1.100000
++    motor0:
++      limit_neg_pin: NO_PIN
++      limit_pos_pin: NO_PIN
++      limit_all_pin: gpio.32:low
++      hard_limits: false
++      pulloff_mm: 1.000000
++      stepstick:
++        step_pin: I2SO.5
++        direction_pin: I2SO.4
++        disable_pin: I2SO.7
++        ms1_pin: NO_PIN
++        ms2_pin: NO_PIN
++        ms3_pin: I2SO.6
++        reset_pin: NO_PIN
++  z:
++    steps_per_mm: 16.299999
++    max_rate_mm_per_min: 1000.000000
++    acceleration_mm_per_sec2: 10.000000
++    max_travel_mm: 300.000000
++    soft_limits: false
++    homing:
++      cycle: 1
++      allow_single_axis: true
++      positive_direction: true
++      mpos_mm: 0.000000
++      feed_mm_per_min: 100.000000
++      seek_mm_per_min: 800.000000
++      settle_ms: 500
++      seek_scaler: 1.100000
++      feed_scaler: 1.100000
++    motor0:
++      limit_neg_pin: NO_PIN
++      limit_pos_pin: NO_PIN
++      limit_all_pin: gpio.35:low
++      hard_limits: false
++      pulloff_mm: 1.000000
++      stepstick:
++        step_pin: I2SO.10
++        direction_pin: I2SO.9
++        disable_pin: I2SO.8
++        ms1_pin: NO_PIN
++        ms2_pin: NO_PIN
++        ms3_pin: I2SO.11
++        reset_pin: NO_PIN
++  a:
++    steps_per_mm: 800.000000
++    max_rate_mm_per_min: 5000.000000
++    acceleration_mm_per_sec2: 100.000000
++    max_travel_mm: 960.000000
++    soft_limits: false
++    homing:
++      cycle: -1
++      allow_single_axis: true
++      positive_direction: false
++      mpos_mm: 150.000000
++      feed_mm_per_min: 100.000000
++      seek_mm_per_min: 200.000000
++      settle_ms: 500
++      seek_scaler: 1.100000
++      feed_scaler: 1.100000
++    motor0:
++      limit_neg_pin: NO_PIN
++      limit_pos_pin: NO_PIN
++      limit_all_pin: gpio.16:low:pu
++      hard_limits: true
++      pulloff_mm: 3.000000
++      stepstick:
++        step_pin: I2SO.13
++        direction_pin: I2SO.12
++        disable_pin: I2SO.15
++        ms1_pin: NO_PIN
++        ms2_pin: NO_PIN
++        ms3_pin: I2SO.14
++        reset_pin: NO_PIN
++  b:
++    steps_per_mm: 800.000000
++    max_rate_mm_per_min: 5000.000000
++    acceleration_mm_per_sec2: 100.000000
++    max_travel_mm: 200.000000
++    soft_limits: false
++    homing:
++      cycle: -1
++      allow_single_axis: true
++      positive_direction: false
++      mpos_mm: 150.000000
++      feed_mm_per_min: 100.000000
++      seek_mm_per_min: 800.000000
++      settle_ms: 500
++      seek_scaler: 1.100000
++      feed_scaler: 1.100000
++    motor0:
++      limit_neg_pin: NO_PIN
++      limit_pos_pin: NO_PIN
++      limit_all_pin: NO_PIN
++      hard_limits: false
++      pulloff_mm: 3.000000
++      stepstick:
++        step_pin: I2SO.18
++        direction_pin: I2SO.17
++        disable_pin: I2SO.16
++        ms1_pin: NO_PIN
++        ms2_pin: NO_PIN
++        ms3_pin: I2SO.19
++        reset_pin: NO_PIN
++  c:
++    steps_per_mm: 800.000000
++    max_rate_mm_per_min: 5000.000000
++    acceleration_mm_per_sec2: 100.000000
++    max_travel_mm: 200.000000
++    soft_limits: false
++    homing:
++      cycle: -1
++      allow_single_axis: true
++      positive_direction: false
++      mpos_mm: 150.000000
++      feed_mm_per_min: 100.000000
++      seek_mm_per_min: 800.000000
++      settle_ms: 500
++      seek_scaler: 1.100000
++      feed_scaler: 1.100000
++    motor0:
++      limit_neg_pin: NO_PIN
++      limit_pos_pin: NO_PIN
++      limit_all_pin: NO_PIN
++      hard_limits: false
++      pulloff_mm: 3.000000
++      stepstick:
++        step_pin: I2SO.21
++        direction_pin: I2SO.20
++        disable_pin: I2SO.23
++        ms1_pin: NO_PIN
++        ms2_pin: NO_PIN
++        ms3_pin: I2SO.22
++        reset_pin: NO_PIN
++control:
++  safety_door_pin: NO_PIN
++  reset_pin: NO_PIN
++  feed_hold_pin: NO_PIN
++  cycle_start_pin: NO_PIN
++  macro0_pin: NO_PIN
++  macro1_pin: NO_PIN
++  macro2_pin: NO_PIN
++  macro3_pin: NO_PIN
++  fault_pin: NO_PIN
++  estop_pin: NO_PIN
++coolant:
++  flood_pin: NO_PIN
++  mist_pin: gpio.4
++  delay_ms: 0
++probe:
++  pin: gpio.34:low
++  toolsetter_pin: NO_PIN
++  check_mode_start: true
++macros:
++  startup_line0:
++  startup_line1:
++  macro0: $SD/Run=test.nc
++  macro1: $SD/Run=test.nc
++  macro2: $SD/Run=test.nc
++  macro3: $SD/Run=test.nc
++start:
++  must_home: false
++  deactivate_parking: false
++  check_limits: false
++parking:
++  enable: false
++  axis: Z
++  target_mpos_mm: -5.000000
++  rate_mm_per_min: 800.000000
++  pullout_distance_mm: 5.000000
++  pullout_rate_mm_per_min: 250.000000
++user_outputs:
++  analog0_pin: NO_PIN
++  analog1_pin: NO_PIN
++  analog2_pin: NO_PIN
++  analog3_pin: NO_PIN
++  analog0_hz: 5000
++  analog1_hz: 5000
++  analog2_hz: 5000
++  analog3_hz: 5000
++  digital0_pin: NO_PIN
++  digital1_pin: NO_PIN
++  digital2_pin: NO_PIN
++  digital3_pin: NO_PIN
++  digital4_pin: NO_PIN
++  digital5_pin: NO_PIN
++  digital6_pin: NO_PIN
++  digital7_pin: NO_PIN
++PWM:
++  pwm_hz: 5000
++  direction_pin: NO_PIN
++  output_pin: gpio.27
++  enable_pin: gpio.12
++  disable_with_s0: false
++  s0_with_disable: true
++  spinup_ms: 1000
++  spindown_ms: 1000
++  tool_num: 0
++  speed_map: 0=0.00% 1000=100.00%
++  off_on_alarm: false
++arc_tolerance_mm: 0.002000
++junction_deviation_mm: 0.010000
++verbose_errors: false
++report_inches: false
++enable_parking_override_control: false
++use_line_numbers: false
++planner_blocks: 16
+diff --git a/FluidNC/src/Diag.cpp b/FluidNC/src/Diag.cpp
+new file mode 100644
+index 0000000..d7ed9eb
+--- /dev/null
++++ b/FluidNC/src/Diag.cpp
+@@ -0,0 +1,225 @@
++// Wiring check for the woodcncrouter (github.com/mtshon/woodcncrouter), same command as its Grbl builds:
++//
++//   M150 [X|Y|Z|A] P<s>   1 kHz pulses, 100 us high, on that axis's step output for <s> seconds
++//                         (default axis X, default 10 s, at most 60 s); P0 stops a running test
++//   M150 [X|Y|Z|A] D1|D0  sets that axis's direction output high / low (electrical level, no step)
++//
++// Only while Idle; nothing moves in the planner and positions are not changed. The outputs are driven
++// through their Pin objects, so it works for gpio and i2so (shift register) step pins alike: with the
++// I2S engine the pulse ISR runs all the time and picks the writes up within a few microseconds.
++
++#include "Diag.h"
++
++#include "Machine/MachineConfig.h"
++#include "Machine/Axes.h"
++#include "Motors/MotorDriver.h"
++#include "System.h"
++#include "Logging.h"
++#include "Driver/delay_usecs.h"
++#include "Platform.h"  // IRAM_ATTR
++
++#include <cctype>
++#include <cstdlib>
++
++#ifdef ESP_PLATFORM
++#    include "esp_timer.h"
++#endif
++
++namespace {
++    constexpr int PULSE_PERIOD_US = 1000;
++    constexpr int PULSE_HIGH_US   = 100;
++    constexpr int DEFAULT_SECONDS = 10;
++    constexpr int MAX_SECONDS     = 60;
++
++    Pin* volatile pulse_pin   = nullptr;
++    volatile bool pulse_inv   = false;
++    volatile int64_t end_us   = 0;
++
++#ifdef ESP_PLATFORM
++    esp_timer_handle_t timer = nullptr;
++
++    void stop_pulse() {
++        if (timer) {
++            esp_timer_stop(timer);
++        }
++        Pin* p = pulse_pin;
++        if (p) {
++            p->write(pulse_inv);  // electrical low
++        }
++        pulse_pin = nullptr;
++    }
++
++    void pulse_cb(void*) {
++        Pin* p = pulse_pin;
++        if (!p) {
++            return;
++        }
++        if (esp_timer_get_time() >= end_us) {
++            p->write(pulse_inv);
++            pulse_pin = nullptr;
++            esp_timer_stop(timer);
++            return;
++        }
++        p->write(!pulse_inv);  // electrical high
++        delay_us(PULSE_HIGH_US);
++        p->write(pulse_inv);
++    }
++
++    bool start_pulse(Pin* pin, int seconds) {
++        if (!timer) {
++            esp_timer_create_args_t args = {};
++            args.callback                = pulse_cb;
++            args.name                    = "m150";
++            if (esp_timer_create(&args, &timer) != ESP_OK) {
++                return false;
++            }
++        }
++        stop_pulse();
++        pulse_inv = pin->inverted();
++        end_us    = esp_timer_get_time() + int64_t(seconds) * 1000000;
++        pulse_pin = pin;
++        return esp_timer_start_periodic(timer, PULSE_PERIOD_US) == ESP_OK;
++    }
++#else
++    void stop_pulse() { pulse_pin = nullptr; }
++    bool start_pulse(Pin*, int) { return false; }
++#endif
++
++    // Parses an unsigned number after a letter; returns false if there is none.
++    bool number(const char*& s, float& value) {
++        char* end;
++        value = strtof(s, &end);
++        if (end == s) {
++            return false;
++        }
++        s = end;
++        return true;
++    }
++
++    MotorDrivers::MotorDriver* driver(int axis) {
++        auto axes = config->_axes;
++        if (!axes || axis >= axes->_numberAxis) {
++            return nullptr;
++        }
++        auto a = axes->_axis[axis];
++        if (!a || !a->_motors[0]) {
++            return nullptr;
++        }
++        return a->_motors[0]->_driver;
++    }
++}
++
++bool diag_m150(const char* line, Channel& out, Error& result) {
++    // Match "M150" (any case, spaces allowed, leading zeros of the number allowed)
++    const char* s = line;
++    while (*s == ' ') {
++        ++s;
++    }
++    if (toupper(*s) != 'M') {
++        return false;
++    }
++    ++s;
++    char* end;
++    long  code = strtol(s, &end, 10);
++    if (end == s || code != 150 || *end == '.') {
++        return false;
++    }
++    s = end;
++
++    int   axis    = 0;
++    bool  have_p  = false, have_d = false;
++    float p       = DEFAULT_SECONDS, d = 0;
++    while (*s) {
++        char c = toupper(*s++);
++        if (c == ' ') {
++            continue;
++        }
++        switch (c) {
++            case 'X':
++                axis = 0;
++                break;
++            case 'Y':
++                axis = 1;
++                break;
++            case 'Z':
++                axis = 2;
++                break;
++            case 'A':
++                axis = 3;
++                break;
++            case 'P':
++                if (!number(s, p) || p < 0) {
++                    result = Error::BadNumberFormat;
++                    return true;
++                }
++                have_p = true;
++                break;
++            case 'D':
++                if (!number(s, d) || (d != 0 && d != 1)) {
++                    result = Error::BadNumberFormat;
++                    return true;
++                }
++                have_d = true;
++                break;
++            default:
++                result = Error::GcodeUnsupportedCommand;
++                return true;
++        }
++        // An axis letter may carry a number ("X0"); ignore it
++        if (c == 'X' || c == 'Y' || c == 'Z' || c == 'A') {
++            float ignored;
++            number(s, ignored);
++        }
++    }
++
++    if (have_p && p == 0) {
++        stop_pulse();
++        log_info_to(out, "M150: test stopped");
++        result = Error::Ok;
++        return true;
++    }
++    if (!state_is(State::Idle)) {
++        result = Error::IdleError;
++        return true;
++    }
++    auto drv = driver(axis);
++    Pin* pin = nullptr;
++    if (drv) {
++        pin = have_d ? drv->diag_dir_pin() : drv->diag_step_pin();
++    }
++    if (!pin || !pin->defined()) {
++        log_error_to(out, "M150: axis " << "XYZA"[axis] << " has no " << (have_d ? "direction" : "step") << " pin");
++        result = Error::GcodeUnsupportedCommand;
++        return true;
++    }
++
++    if (have_d) {
++        pin->write((d != 0) ^ pin->inverted());  // electrical level
++        log_info_to(out, "M150: " << "XYZA"[axis] << " dir " << pin->name() << (d != 0 ? " high" : " low"));
++        result = Error::Ok;
++        return true;
++    }
++
++    int seconds = int(p + 0.5f);
++    if (seconds > MAX_SECONDS) {
++        seconds = MAX_SECONDS;
++    }
++    if (seconds < 1) {
++        seconds = 1;
++    }
++    if (!start_pulse(pin, seconds)) {
++        result = Error::GcodeUnsupportedCommand;
++        return true;
++    }
++    log_info_to(out, "M150: 1 kHz, " << PULSE_HIGH_US << " us pulses on " << "XYZA"[axis] << " step " << pin->name() << " for " << seconds << " s");
++    result = Error::Ok;
++    return true;
++}
++
++void diag_stop() {
++    stop_pulse();
++}
++
++void IRAM_ATTR diag_end() {
++    end_us = 0;
++}
+diff --git a/FluidNC/src/Diag.h b/FluidNC/src/Diag.h
+new file mode 100644
+index 0000000..4361beb
+--- /dev/null
++++ b/FluidNC/src/Diag.h
+@@ -0,0 +1,13 @@
++#pragma once
++
++#include "Error.h"
++#include "Channel.h"
++
++// M150 wiring check (see Diag.cpp). Returns true when the line was an M150 command; result holds its status.
++bool diag_m150(const char* line, Channel& out, Error& result);
++
++// Stops a running M150 pulse test (called on reset and before motion).
++void diag_stop();
++
++// ISR-safe: makes a running M150 pulse test end at its next tick.
++void diag_end();
+diff --git a/FluidNC/src/Motors/MotorDriver.h b/FluidNC/src/Motors/MotorDriver.h
+index 0a3ffd3..3c71364 100644
+--- a/FluidNC/src/Motors/MotorDriver.h
++++ b/FluidNC/src/Motors/MotorDriver.h
+@@ -108,6 +108,10 @@ namespace MotorDrivers {
+         // Test for a real motor as opposed to a NullMotor placeholder
+         virtual bool isReal() { return true; }
+ 
++        // Wiring check (M150, Diag.cpp): the step and direction outputs of a step/dir driver, or nullptr.
++        virtual ::Pin* diag_step_pin() { return nullptr; }
++        virtual ::Pin* diag_dir_pin() { return nullptr; }
++
+         // Virtual base classes require a virtual destructor.
+         virtual ~MotorDriver() {}
+ 
+diff --git a/FluidNC/src/Motors/StandardStepper.h b/FluidNC/src/Motors/StandardStepper.h
+index e6d9829..c6d8433 100644
+--- a/FluidNC/src/Motors/StandardStepper.h
++++ b/FluidNC/src/Motors/StandardStepper.h
+@@ -19,6 +19,9 @@ namespace MotorDrivers {
+ 
+         void init_step_dir_pins();
+ 
++        ::Pin* diag_step_pin() override { return &_step_pin; }
++        ::Pin* diag_dir_pin() override { return &_dir_pin; }
++
+     protected:
+         void config_message() override;
+ 
+diff --git a/FluidNC/src/ProcessSettings.cpp b/FluidNC/src/ProcessSettings.cpp
+index 4e2e81b..f0032c2 100644
+--- a/FluidNC/src/ProcessSettings.cpp
++++ b/FluidNC/src/ProcessSettings.cpp
+@@ -28,6 +28,7 @@
+ #include "Driver/backtrace.h"     // backtrace_get(), etc.
+ #include "FileCommands.h"         // make_file_commands()
+ #include "Job.h"                  // Job::active()
++#include "Diag.h"                 // diag_m150()
+ 
+ #include "FluidPath.h"
+ #include "HashFS.h"
+@@ -1370,6 +1371,11 @@ Error execute_line(const char* line, Channel& channel, AuthenticationLevel auth_
+     if (line[0] == '$' || line[0] == '[') {
+         return run_command_inline(line, channel, auth_level);
+     }
++    // M150: woodcncrouter wiring check (Diag.cpp), handled before the gcode parser
++    Error diagResult;
++    if (diag_m150(line, channel, diagResult)) {
++        return diagResult;
++    }
+     // Everything else is gcode. Block if in alarm or jog mode.
+     if (state_is(State::Alarm) || state_is(State::ConfigAlarm) || state_is(State::Jog)) {
+         return Error::SystemGcLock;
+diff --git a/FluidNC/src/Protocol.cpp b/FluidNC/src/Protocol.cpp
+index 161fd6a..260ecd4 100644
+--- a/FluidNC/src/Protocol.cpp
++++ b/FluidNC/src/Protocol.cpp
+@@ -7,6 +7,7 @@
+   Protocol.cpp - execution state machine
+ */
+ 
++#include "Diag.h"  // diag_stop()
+ #include "Protocol.h"
+ #include "Event.h"
+ 
+@@ -82,6 +83,7 @@ union SpindleStop {
+ static SpindleStop spindle_stop_ovr;
+ 
+ void protocol_reset() {
++    diag_stop();  // M150 wiring test
+     probing                = false;
+     soft_limit             = false;
+     rtSafetyDoor           = false;
+diff --git a/FluidNC/src/Stepper.cpp b/FluidNC/src/Stepper.cpp
+index 5a767b1..41c6da2 100644
+--- a/FluidNC/src/Stepper.cpp
++++ b/FluidNC/src/Stepper.cpp
+@@ -7,6 +7,7 @@
+   Stepper.cpp - stepper motor driver: executes motion plans using stepper motors
+ */
+ 
++#include "Diag.h"  // diag_end()
+ #include "Stepper.h"
+ 
+ #include "Machine/MachineConfig.h"
+@@ -278,6 +279,7 @@ void Stepper::wake_up() {
+         return;
+     }
+     awake = true;
++    diag_end();  // a running M150 wiring test ends when real motion starts
+     // Cancel any pending stepper disable
+     protocol_cancel_disable_steppers();
+     // Enable stepper drivers.
+diff --git a/platformio.ini b/platformio.ini
+index 521e983..d8d7e40 100644
+--- a/platformio.ini
++++ b/platformio.ini
+@@ -128,7 +128,7 @@ lib_compat_mode = strict
+ 
+ [common_esp32]
+ extends = common_esp32_base
+-platform = https://github.com/platformio/platform-espressif32.git
++platform = espressif32 @ 6.12.0  ; woodcncrouter: pinned – git master (7.x) brings GCC 14, which FluidNC/stdfs does not build with
+ platform_packages = platformio/framework-arduinoespressif32@^3.20017.241212
+ extra_scripts =
+     FluidNC/ld/esp32/vtable_in_dram.py
+-- 
+2.43.0
+

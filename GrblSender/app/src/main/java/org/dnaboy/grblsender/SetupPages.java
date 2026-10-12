@@ -33,7 +33,7 @@ final class SetupPages {
     interface Host {
         boolean connected();
         boolean busy();                       // a job is running
-        String board();                       // MainActivity.BOARD_PROMINI / BOARD_BLUEPILL
+        String board();                       // MainActivity.BOARD_PROMINI / BOARD_BLUEPILL / BOARD_FLUIDNC
         Map<String, String> grblSettings();   // last $$ report, "$100" -> "81.490"
         void send(String cmd);
         void log(String msg);
@@ -157,18 +157,23 @@ final class SetupPages {
         Dialog d = page("Wiring", null);
         RadioGroup g = new RadioGroup(a);
         g.setOrientation(RadioGroup.HORIZONTAL);
-        RadioButton pro = new RadioButton(a), blue = new RadioButton(a);
+        RadioButton pro = new RadioButton(a), blue = new RadioButton(a), fluid = new RadioButton(a);
         pro.setId(View.generateViewId());
         blue.setId(View.generateViewId());
+        fluid.setId(View.generateViewId());
         pro.setText("Arduino Pro Mini");
         blue.setText("STM32F103C8T6 Blue / Black Pill");
-        for (RadioButton rb : new RadioButton[]{pro, blue}) { rb.setTextColor(FG); rb.setTextSize(16); g.addView(rb); }
+        fluid.setText("FluidNC ESP32 6-axis");
+        for (RadioButton rb : new RadioButton[]{pro, blue, fluid}) { rb.setTextColor(FG); rb.setTextSize(16); g.addView(rb); }
         LinearLayout holder = (LinearLayout) body.getParent().getParent();   // root
         holder.addView(g, 1);
-        boolean isBlue = MainActivity.BOARD_BLUEPILL.equals(host.board());
-        g.check(isBlue ? blue.getId() : pro.getId());
-        fillWiring(isBlue);
-        g.setOnCheckedChangeListener((gr, id) -> fillWiring(id == blue.getId()));
+        String board = host.board();
+        g.check(MainActivity.BOARD_BLUEPILL.equals(board) ? blue.getId()
+                : MainActivity.BOARD_FLUIDNC.equals(board) ? fluid.getId() : pro.getId());
+        if (MainActivity.BOARD_FLUIDNC.equals(board)) fillWiringFluidnc(); else fillWiring(MainActivity.BOARD_BLUEPILL.equals(board));
+        g.setOnCheckedChangeListener((gr, id) -> {
+            if (id == fluid.getId()) fillWiringFluidnc(); else fillWiring(id == blue.getId());
+        });
         d.show();
     }
 
@@ -283,6 +288,58 @@ final class SetupPages {
                 + "drivers' motor supply and the MK300 mains wiring away from the signal cables.");
     }
 
+    /** Macrobase "6 axis CNC card" (ESP32 + FluidNC), pins from its stock config.yaml. */
+    private void fillWiringFluidnc() {
+        body.removeAllViews();
+        p("Board: Macrobase 6-axis ESP32 card running FluidNC. Step, dir and enable go out through I2S shift registers; "
+                + "every pin is set in config.yaml on the board, not in $ settings. Supply 12–24 V DC to the board "
+                + "(it cuts off above 30 V); USB alone only powers the ESP32.");
+
+        h("1. Stepper drivers (MA860H ×3)");
+        p("Common-cathode wiring: the card's X-STEP / X-DIR / X-EAN terminals go to PUL+ / DIR+ / ENA+, and the card's "
+                + "GND terminal to PUL−, DIR−, ENA− of all drivers (the Macrobase manual: \"GND – all drivers PUL−, ENA−, DIR−\").");
+        table(new String[][]{
+                {"Signal", "Card terminal", "MA860H terminal", "config.yaml"},
+                {"X step / dir / enable", "X-STEP, X-DIR, X-EAN", "X PUL+, DIR+, ENA+", "I2SO.2 / .1 / .0"},
+                {"Y step / dir / enable", "Y-STEP, Y-DIR, Y-EAN", "Y PUL+, DIR+, ENA+", "I2SO.5 / .4 / .7"},
+                {"Z step / dir / enable", "Z-STEP, Z-DIR, Z-EAN", "Z PUL+, DIR+, ENA+", "I2SO.10 / .9 / .8"},
+                {"A step / dir / enable", "A-STEP, A-DIR, A-EAN", "(4th axis)", "I2SO.13 / .12 / .15"},
+                {"B, C", "B-…, C-…", "(5th, 6th axis)", "I2SO.16–23"},
+                {"GND", "GND", "PUL−, DIR−, ENA− of all drivers", ""},
+        });
+        p("The stock config.yaml has steps_per_mm 800 and 5000 mm/min on every axis, made for StepStick modules. "
+                + "Set this router's values before the first move (CNC setup page, or the console): "
+                + "$/axes/x/steps_per_mm=81.49, $/axes/y/steps_per_mm=81.49, $/axes/z/steps_per_mm=16.3, then $CD=config.yaml "
+                + "to save. If an axis runs the wrong way, add :low to its direction_pin in config.yaml.", WARN);
+        p("Measure the STEP terminal voltage before wiring the MA860H: if it is 3.3 V the opto current is low; "
+                + "use a 5 V buffer (74HCT245) if a motor misses steps.");
+
+        h("2. Spindle on/off → MK300 inverter");
+        p("Spindle on/off: GPIO12 (PWM/enable_pin in config.yaml, set 2026-10-12; the stock file had it as flood coolant). "
+                + "M3 / M5 switch it, like D13 / PB13 on the other boards. GPIO27 is the PWM output (PWM-OUT terminal, its "
+                + "voltage set with PWM-ADJ), unused while the MK300 sets the speed. Wire GPIO12 through a PC817 optocoupler "
+                + "exactly as for the other boards (GPIO12 → 150 Ω → PC817 pin 1, GND → pin 2, pin 4 → X1, pin 3 → COM). "
+                + "Never connect the card to X1 directly: X1 sits at about +24 V.", WARN);
+
+        h("3. Home / limit switches and probe");
+        table(new String[][]{
+                {"Switch", "Card terminal", "ESP32 pin"},
+                {"Home X", "X-LIM", "GPIO33 (active low)"},
+                {"Home Y", "Y-LIM", "GPIO32 (active low)"},
+                {"Home Z", "Z-LIM", "GPIO35 (active low)"},
+                {"Probe", "PROBE", "GPIO34 (active low)"},
+                {"Feed hold", "", "GPIO36"},
+                {"Other side of each switch", "GND", ""},
+        });
+        p("Normally-open switches to GND. GPIO34–36 are input-only and have no internal pull-up; the card supplies them. "
+                + "Homing (cycle, direction, speeds, pull-off) is set per axis under axes/…/homing in config.yaml, not with $22–$27. "
+                + "Inductive 12–24 V sensors must go through an opto module.");
+
+        h("4. Power and USB");
+        p("Tablet → USB OTG → the card's USB (CH340K, 115200 baud). Join the card's GND and the drivers' signal GND; keep "
+                + "motor and mains wiring away from the signal cables. FluidNC also offers Wi-Fi and a WebUI (see Settings → Firmware).");
+    }
+
     // ---------------------------------------------------------------- CNC setup
 
     /** Grbl steps/mm for a rack & pinion axis: driver pulses/rev × reduction ÷ (pinion teeth × rack pitch). */
@@ -317,7 +374,7 @@ final class SetupPages {
 
     void showCncSetup() {
         LinearLayout buttons = new LinearLayout(a);
-        Button apply = button("Apply $100–$102 to Grbl");
+        Button apply = button(MainActivity.BOARD_FLUIDNC.equals(host.board()) ? "Apply steps/mm to FluidNC" : "Apply $100–$102 to Grbl");
         apply.setTextColor(GOOD);
         buttons.addView(apply, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.6f));
         Dialog d = page("CNC setup", buttons);
@@ -396,6 +453,25 @@ final class SetupPages {
             double xy = stepsPerMm(num(pulses), num(red), num(teeth), num(pitch));
             double z = stepsPerMm(num(pulses), 1, num(zTeeth), num(zPitch));
             if (xy < 1 || xy > 2000 || z < 1 || z > 2000) { host.log("Steps/mm out of range – check the numbers"); return; }
+            if (MainActivity.BOARD_FLUIDNC.equals(host.board())) {
+                // FluidNC keeps these in config.yaml; $100… do not exist there. $CD= saves the running config.
+                new android.app.AlertDialog.Builder(a)
+                        .setTitle("Write steps/mm to FluidNC?")
+                        .setMessage(String.format(Locale.US, "$/axes/x/steps_per_mm=%.3f\n$/axes/y/steps_per_mm=%.3f\n"
+                                + "$/axes/z/steps_per_mm=%.3f\n\nThis changes the running machine only. To keep it after a "
+                                + "restart, send $CD=config.yaml (it rewrites config.yaml on the board).", xy, xy, z))
+                        .setPositiveButton("Write", (dlg, which) -> {
+                            host.send(String.format(Locale.US, "$/axes/x/steps_per_mm=%.3f", xy));
+                            host.send(String.format(Locale.US, "$/axes/y/steps_per_mm=%.3f", xy));
+                            host.send(String.format(Locale.US, "$/axes/z/steps_per_mm=%.3f", z));
+                            for (char ax : new char[]{'x', 'y', 'z'}) host.send("$/axes/" + ax + "/steps_per_mm");
+                            host.log("Steps/mm written to FluidNC (not saved yet: $CD=config.yaml); re-check with a measured jog");
+                            current.postDelayed(calc, 1500);
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                return;
+            }
             new android.app.AlertDialog.Builder(a)
                     .setTitle("Write steps/mm to Grbl?")
                     .setMessage(String.format(Locale.US, "$100=%.3f\n$101=%.3f\n$102=%.3f", xy, xy, z))
