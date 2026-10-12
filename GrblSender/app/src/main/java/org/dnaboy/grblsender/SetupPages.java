@@ -118,13 +118,20 @@ final class SetupPages {
         return t;
     }
 
-    private void image(int resId, String caption) {
+    private void image(int resId, String caption) { image(resId, caption, 1f); }
+
+    /** An illustration at a fraction of the page width (centred), with a caption below. */
+    private void image(int resId, String caption, float widthFraction) {
         ImageView iv = new ImageView(a);
         iv.setImageResource(resId);
         iv.setAdjustViewBounds(true);
         iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
         iv.setPadding(0, px(10), 0, px(2));
-        body.addView(iv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout row = new LinearLayout(a);
+        row.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        row.setWeightSum(1f);
+        row.addView(iv, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, widthFraction));
+        body.addView(row, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         TextView c = text(caption, 12, DIM);
         c.setPadding(0, 0, 0, px(6));
         body.addView(c);
@@ -291,6 +298,9 @@ final class SetupPages {
     /** Macrobase "6 axis CNC card" (ESP32 + FluidNC), pins from its stock config.yaml. */
     private void fillWiringFluidnc() {
         body.removeAllViews();
+        image(R.drawable.art_wiring_fluidnc,
+                "Macrobase 6-axis ESP32 card (vendor photo): driver terminals on top, spindle / mist on the right, "
+                + "probe, limit and macro pins on the right header, USB and TF card at the bottom.", 0.6f);
         p("Board: Macrobase 6-axis ESP32 card running FluidNC. Step, dir and enable go out through I2S shift registers; "
                 + "every pin is set in config.yaml on the board, not in $ settings. Supply 12–24 V DC to the board "
                 + "(it cuts off above 30 V); USB alone only powers the ESP32.");
