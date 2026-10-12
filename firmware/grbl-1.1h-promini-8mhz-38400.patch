@@ -1,8 +1,8 @@
 diff --git a/Makefile b/Makefile
-index 9e20a43..23944c7 100644
+index 9e20a43..a846673 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -29,7 +29,7 @@
+@@ -29,11 +29,11 @@
  # FUSES ........ Parameters for avrdude to flash the fuses appropriately.
  
  DEVICE     ?= atmega328p
@@ -11,6 +11,11 @@ index 9e20a43..23944c7 100644
  PROGRAMMER ?= -c avrisp2 -P usb
  SOURCE    = main.c motion_control.c gcode.c spindle_control.c coolant_control.c serial.c \
               protocol.c stepper.c eeprom.c settings.c planner.c nuts_bolts.c limits.c jog.c\
+-             print.c probe.c report.c system.c
++             print.c probe.c report.c system.c diag.c
+ BUILDDIR = build
+ SOURCEDIR = grbl
+ # FUSES      = -U hfuse:w:0xd9:m -U lfuse:w:0x24:m
 diff --git a/grbl/config.h b/grbl/config.h
 index f48d958..61c0601 100644
 --- a/grbl/config.h
@@ -34,3 +39,175 @@ index f48d958..61c0601 100644
  
  // Alters the behavior of the spindle enable pin with the USE_SPINDLE_DIR_AS_ENABLE_PIN option . By default,
  // Grbl will not disable the enable pin if spindle speed is zero and M3/4 is active, but still sets the PWM 
+diff --git a/grbl/diag.c b/grbl/diag.c
+new file mode 100644
+index 0000000..28db562
+--- /dev/null
++++ b/grbl/diag.c
+@@ -0,0 +1,91 @@
++/*
++  diag.c - wiring diagnostics: 1 kHz, 100 us wide pulses on a step pin
++
++  M150 [X|Y|Z|A] P<s> pulses that axis's step pin (X when no axis is given; A is the spare A4 pin)
++  for P seconds without the stepper code, so a scope sees clean 1 kHz / 100 us pulses and the pin
++  itself is tested. Timer0 (only used by the stepper for the step pulse width, idle between moves)
++  runs in CTC mode at 10 kHz: tick 0 starts the pulse, tick 1 ends it, ticks 2-9 stay idle.
++  It waits for motion to finish first; any new motion (st_wake_up) or a reset stops it.
++*/
++#include "grbl.h"
++
++#ifdef STEP_PULSE_DELAY
++  #error "diag.c uses TIMER0_COMPA_vect, which STEP_PULSE_DELAY needs"
++#endif
++
++static volatile uint32_t diag_ms_left;
++static volatile uint8_t *diag_port;
++static uint8_t diag_mask, diag_tick;
++
++void diag_stop(void)
++{
++  // back to the stepper's Timer0 setup (see stepper_init)
++  TCCR0B = 0;
++  TCCR0A = 0;
++  TIMSK0 = (1<<TOIE0);
++  if (diag_ms_left) {
++    if (diag_tick == 1) *diag_port ^= diag_mask;   // stopped inside a pulse: back to idle
++    diag_ms_left = 0;
++  }
++}
++
++ISR(TIMER0_COMPA_vect)
++{
++  if (diag_tick == 0) *diag_port ^= diag_mask;        // pulse starts
++  else if (diag_tick == 1) {
++    *diag_port ^= diag_mask;                          // pulse ends after 100 us
++    if (--diag_ms_left == 0) { TCCR0B = 0; TIMSK0 = (1<<TOIE0); TCCR0A = 0; }
++  }
++  if (++diag_tick == 10) diag_tick = 0;
++}
++
++uint8_t diag_execute_line(char *line)
++{
++  uint8_t i = 1;
++  float value;
++  uint32_t seconds = DIAG_DEFAULT_S;
++  uint8_t axis = X_AXIS;
++
++  // protocol has already removed spaces and upper-cased the line
++  if (line[0] != 'M') return 0xFF;
++  if (!read_float(line, &i, &value) || value != DIAG_MCODE_PULSE) return 0xFF;
++  switch (line[i]) {
++    case 'X': i++; break;
++    case 'Y': i++; axis = Y_AXIS; break;
++    case 'Z': i++; axis = Z_AXIS; break;
++    case 'A': i++; axis = N_AXIS; break;
++  }
++  if (line[i] == 'P') {
++    i++;
++    if (!read_float(line, &i, &value) || value < 0 || value > 600) return STATUS_GCODE_VALUE_WORD_MISSING;
++    seconds = (uint32_t)value;
++  }
++  if (line[i] != 0) return STATUS_GCODE_UNSUPPORTED_COMMAND;
++  if (sys.state & (STATE_ALARM | STATE_JOG | STATE_CHECK_MODE)) return STATUS_SYSTEM_GC_LOCK;
++  protocol_buffer_synchronize();   // let queued motion finish: the stepper owns the step pins while it runs
++  if (sys.abort) return STATUS_OK;
++
++  diag_stop();
++  if (seconds == 0) return STATUS_OK;
++  if (axis == N_AXIS) {
++    DIAG_A_DDR |= (1<<DIAG_A_BIT);
++    DIAG_A_PORT &= ~(1<<DIAG_A_BIT);
++    diag_port = &DIAG_A_PORT;
++    diag_mask = 1<<DIAG_A_BIT;
++  } else {
++    // step pins idle at the $2 (step invert) level, set by st_go_idle; toggling keeps that polarity
++    diag_port = &STEP_PORT;
++    diag_mask = get_step_pin_mask(axis);
++  }
++  diag_tick = 2;                   // first pulse after 0.8 ms
++  diag_ms_left = seconds * 1000;
++  // Timer0: CTC, 8 MHz / 8 = 1 MHz, compare every 100 us
++  TCCR0B = 0;
++  TCNT0 = 0;
++  OCR0A = (F_CPU / 8 / 10000) - 1;
++  TCCR0A = (1<<WGM01);
++  TIFR0 = (1<<OCF0A) | (1<<TOV0);
++  TIMSK0 = (1<<OCIE0A);
++  TCCR0B = (1<<CS01);
++  return STATUS_OK;
++}
+diff --git a/grbl/diag.h b/grbl/diag.h
+new file mode 100644
+index 0000000..9db5493
+--- /dev/null
++++ b/grbl/diag.h
+@@ -0,0 +1,20 @@
++/*
++  diag.h - wiring diagnostics: 1 kHz, 100 us wide pulses on a step pin
++*/
++#ifndef diag_h
++#define diag_h
++
++// M150 [X|Y|Z|A] P<s>: pulses on that axis's step pin (default X) for P seconds (default 10, P0 stops it)
++#define DIAG_MCODE_PULSE  150
++#define DIAG_DEFAULT_S    10
++
++// Test-only A step pin: A4 (coolant mist, unused without ENABLE_M7). Grbl on the 328P has no A axis.
++#define DIAG_A_DDR   DDRC
++#define DIAG_A_PORT  PORTC
++#define DIAG_A_BIT   4
++
++// Handles "M150[X|Y|Z|A][P<s>]" lines; returns STATUS_OK or an error, or 0xFF when the line is not M150.
++uint8_t diag_execute_line(char *line);
++void diag_stop(void);
++
++#endif
+diff --git a/grbl/grbl.h b/grbl/grbl.h
+index dd8e781..d608b8c 100644
+--- a/grbl/grbl.h
++++ b/grbl/grbl.h
+@@ -60,6 +60,7 @@
+ #include "spindle_control.h"
+ #include "stepper.h"
+ #include "jog.h"
++#include "diag.h"
+ 
+ // ---------------------------------------------------------------------------------------
+ // COMPILE-TIME ERROR CHECKING OF DEFINE VALUES:
+diff --git a/grbl/protocol.c b/grbl/protocol.c
+index 08ea48b..45451c0 100644
+--- a/grbl/protocol.c
++++ b/grbl/protocol.c
+@@ -100,8 +100,10 @@ void protocol_main_loop()
+           // Everything else is gcode. Block if in alarm or jog mode.
+           report_status_message(STATUS_SYSTEM_GC_LOCK);
+         } else {
+-          // Parse and execute g-code block.
+-          report_status_message(gc_execute_line(line));
++          // Parse and execute g-code block (M150 is the wiring check in diag.c).
++          uint8_t status = diag_execute_line(line);
++          if (status == 0xFF) { status = gc_execute_line(line); }
++          report_status_message(status);
+         }
+ 
+         // Reset tracking data for next line.
+diff --git a/grbl/stepper.c b/grbl/stepper.c
+index 8e0b151..a509f4d 100644
+--- a/grbl/stepper.c
++++ b/grbl/stepper.c
+@@ -223,6 +223,7 @@ static st_prep_t prep;
+ // enabled. Startup init and limits call this function but shouldn't start the cycle.
+ void st_wake_up()
+ {
++  diag_stop(); // the stepper needs Timer0 and the step pins back
+   // Enable stepper drivers.
+   if (bit_istrue(settings.flags,BITFLAG_INVERT_ST_ENABLE)) { STEPPERS_DISABLE_PORT |= (1<<STEPPERS_DISABLE_BIT); }
+   else { STEPPERS_DISABLE_PORT &= ~(1<<STEPPERS_DISABLE_BIT); }
+@@ -534,6 +535,7 @@ void st_generate_step_dir_invert_masks()
+ // Reset and clear stepper subsystem variables
+ void st_reset()
+ {
++  diag_stop();
+   // Initialize stepper driver idle state.
+   st_go_idle();
+ 

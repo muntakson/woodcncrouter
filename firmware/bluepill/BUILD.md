@@ -6,7 +6,7 @@ USB DFU (`1EAF:0003`, alt "0x8002000") by Grbl Sender (☰ → Settings → Blue
 
 | Build | Chip | Size | In the app |
 |---|---|---|---|
-| **`grbl-1.1f-bluepill64-maple.bin`** | **64 KB C8T6 (this machine)** | 35,568 B of 55 KB (r3) | listed (target `bluepill`) |
+| **`grbl-1.1f-bluepill64-maple.bin`** | **64 KB C8T6 (this machine)** | 36,100 B of 55 KB (r6) | listed (target `bluepill`) |
 | `grblhal-20250514-bluepill-maple-usb.bin` | 128 KB only | 120,584 B of 120,832 B | hidden (target `bluepill-128k`) |
 
 ## 1. Grbl 1.1f for 64 KB chips (in use)
@@ -49,12 +49,13 @@ of `inc/cpu_map.h`, **not** from `CPU_MAP_STM32F103` (which is commented out).
 | Reset / feed hold / cycle start / door | PB5 / PB6 / PB7 / PB8 |
 | Probe | PB9 |
 
-### M150: wiring check (r4)
+### M150: wiring check (r4–r6)
 
-`M150 P<s>` puts a 1 kHz, 50 % square wave on the X step pin (PA0) for `<s>` seconds (default 10,
+`M150 [X|Y|Z|A] P<s>` puts 1 kHz pulses, each 100 µs high (r5; r4 was a 50 % square wave), on that axis's step pin
+(X PA0 / Y PA1 / Z PA2 / A PA3; X when no axis is given; the axis letter is new in r6) for `<s>` seconds (default 10,
 `P0` stops it), from TIM4 and without moving the machine (`src/diag.c`). It waits for queued motion,
 is refused in alarm or while jogging, and any new motion or a reset ends it. The app's
-Settings → Diagnosis → Xpulse uses it.
+Settings → Diagnosis → Xpulse / Ypulse / Zpulse buttons use it.
 
 All outputs are 3.3 V, like the Pro Mini. See the upstream `STM32F103-USBCNC-Pinout.png`.
 

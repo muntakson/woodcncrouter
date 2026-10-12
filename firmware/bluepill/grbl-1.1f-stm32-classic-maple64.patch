@@ -44,22 +44,23 @@ index 0000000..3d786d5
 +	rm -rf $(BUILD)
 diff --git a/inc/diag.h b/inc/diag.h
 new file mode 100644
-index 0000000..bbc0c19
+index 0000000..1d0bd05
 --- /dev/null
 +++ b/inc/diag.h
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,18 @@
 +/*
-+  diag.h - wiring diagnostics: a 1 kHz, 50 % square wave on the X step pin
++  diag.h - wiring diagnostics: 1 kHz, 100 us wide pulses on a step pin
 +*/
 +#ifndef diag_h
 +#define diag_h
 +
-+// M150 P<s>: square wave on the X step pin for P seconds (default 10, P0 stops it)
++// M150 [X|Y|Z|A] P<s>: pulses on that axis's step pin (default X) for P seconds (default 10, P0 stops it)
 +#define DIAG_MCODE_PULSE  150
 +#define DIAG_PULSE_HZ     1000
++#define DIAG_PULSE_US     100   // high time of each pulse
 +#define DIAG_DEFAULT_S    10
 +
-+// Handles "M150[P<s>]" lines; returns STATUS_OK or an error, or 0xFF when the line is not M150.
++// Handles "M150[X|Y|Z|A][P<s>]" lines; returns STATUS_OK or an error, or 0xFF when the line is not M150.
 +uint8_t diag_execute_line(char *line);
 +void diag_stop(void);
 +uint8_t diag_active(void);
@@ -79,28 +80,34 @@ index dcd781e..cfa4ed1 100644
  // COMPILE-TIME ERROR CHECKING OF DEFINE VALUES:
 diff --git a/src/diag.c b/src/diag.c
 new file mode 100644
-index 0000000..5b821c7
+index 0000000..05e882d
 --- /dev/null
 +++ b/src/diag.c
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,124 @@
 +/*
-+  diag.c - wiring diagnostics: a 1 kHz, 50 % square wave on the X step pin
++  diag.c - wiring diagnostics: 1 kHz, 100 us wide pulses on a step pin
 +
-+  M150 P<s> toggles the X step pin from TIM4 (free in this port) for P seconds, without
-+  the stepper code, so a scope sees a clean 1 kHz / 50 % wave and the pin itself is tested.
++  M150 [X|Y|Z|A] P<s> toggles that axis's step pin (X when no axis is given) from TIM4 (free in
++  this port) for P seconds, without
++  the stepper code, so a scope sees clean 1 kHz / 100 us pulses and the pin itself is tested.
++  TIM4's period alternates between the high time (100 us) and the rest of the period (900 us).
 +  It waits for motion to finish first; any new motion (st_wake_up) or a reset stops it.
 +*/
 +#include "grbl.h"
 +
 +#ifdef STM32F103C8
 +
++#define DIAG_LOW_US  (1000000 / DIAG_PULSE_HZ - DIAG_PULSE_US)
++
 +static volatile uint32_t diag_toggles_left;
++static uint8_t diag_axis = X_AXIS;
++static uint16_t diag_bit = 1 << X_STEP_BIT;   // step pin of diag_axis (all step pins are on STEP_PORT)
 +
 +static void diag_pin_low(void)
 +{
-+  // idle level: low, or high when $2 inverts the X step pulse
-+  if (settings.step_invert_mask & bit(X_AXIS)) STEP_PORT->ODR |= (1 << X_STEP_BIT);
-+  else STEP_PORT->ODR &= ~(1 << X_STEP_BIT);
++  // idle level: low, or high when $2 inverts this axis's step pulse
++  if (settings.step_invert_mask & bit(diag_axis)) STEP_PORT->ODR |= diag_bit;
++  else STEP_PORT->ODR &= ~diag_bit;
 +}
 +
 +void diag_stop(void)
@@ -115,26 +122,29 @@ index 0000000..5b821c7
 +
 +uint8_t diag_active(void) { return diag_toggles_left != 0; }
 +
-+static void diag_start(uint32_t seconds)
++static void diag_start(uint8_t axis, uint16_t step_bit, uint32_t seconds)
 +{
 +  GPIO_InitTypeDef gpio;
 +
 +  diag_stop();
 +  if (seconds == 0) return;
++  diag_axis = axis;
++  diag_bit = step_bit;
 +
 +  // make sure the pin really is a push-pull output
 +  RCC_APB2PeriphClockCmd(RCC_STEP_PORT, ENABLE);
-+  gpio.GPIO_Pin = 1 << X_STEP_BIT;
++  gpio.GPIO_Pin = diag_bit;
 +  gpio.GPIO_Speed = GPIO_Speed_50MHz;
 +  gpio.GPIO_Mode = GPIO_Mode_Out_PP;
 +  GPIO_Init(STEP_PORT, &gpio);
 +  diag_pin_low();
 +
-+  // TIM4 on APB1 runs at 72 MHz: 72 MHz / 72 = 1 MHz count, update every 500 us = 2 kHz toggles
++  // TIM4 on APB1 runs at 72 MHz: 72 MHz / 72 = 1 MHz count (1 us ticks). The first update
++  // comes after one low time, then the pin goes high for DIAG_PULSE_US.
 +  RCC->APB1ENR |= RCC_APB1Periph_TIM4;
 +  TIM4->CR1 = 0;
 +  TIM4->PSC = (F_CPU / 1000000) - 1;
-+  TIM4->ARR = (1000000 / (2 * DIAG_PULSE_HZ)) - 1;
++  TIM4->ARR = DIAG_LOW_US - 1;
 +  TIM4->CNT = 0;
 +  TIM4->EGR = TIM_EGR_UG;
 +  TIM4->SR = ~TIM_SR_UIF;
@@ -149,7 +159,10 @@ index 0000000..5b821c7
 +{
 +  TIM4->SR = ~TIM_SR_UIF;
 +  if (diag_toggles_left == 0) { TIM4->CR1 &= ~TIM_CR1_CEN; return; }
-+  STEP_PORT->ODR ^= (1 << X_STEP_BIT);
++  STEP_PORT->ODR ^= diag_bit;
++  // even count left (it starts even) = pin just went to its active level: hold it for the pulse width
++  // (CNT restarted at 0 a few us ago, so the new ARR applies to the phase now running)
++  TIM4->ARR = (diag_toggles_left & 1) ? DIAG_LOW_US - 1 : DIAG_PULSE_US - 1;
 +  if (--diag_toggles_left == 0) {
 +    TIM4->CR1 &= ~TIM_CR1_CEN;
 +    diag_pin_low();
@@ -161,10 +174,20 @@ index 0000000..5b821c7
 +  uint8_t i = 1;
 +  float value;
 +  uint32_t seconds = DIAG_DEFAULT_S;
++  uint8_t axis = X_AXIS;
++  uint16_t step_bit = 1 << X_STEP_BIT;
 +
 +  // protocol has already removed spaces and upper-cased the line
 +  if (line[0] != 'M') return 0xFF;
 +  if (!read_float(line, &i, &value) || value != DIAG_MCODE_PULSE) return 0xFF;
++  switch (line[i]) {
++    case 'X': i++; break;
++    case 'Y': i++; axis = Y_AXIS; step_bit = 1 << Y_STEP_BIT; break;
++    case 'Z': i++; axis = Z_AXIS; step_bit = 1 << Z_STEP_BIT; break;
++#if defined(AA_AXIS) || defined(AB_AXIS) || defined(ABC_AXIS)
++    case 'A': i++; axis = A_AXIS; step_bit = 1 << A_STEP_BIT; break;
++#endif
++  }
 +  if (line[i] == 'P') {
 +    i++;
 +    if (!read_float(line, &i, &value) || value < 0 || value > 600) return STATUS_GCODE_VALUE_WORD_MISSING;
@@ -174,7 +197,7 @@ index 0000000..5b821c7
 +  if (sys.state & (STATE_ALARM | STATE_JOG | STATE_CHECK_MODE)) return STATUS_SYSTEM_GC_LOCK;
 +  protocol_buffer_synchronize();   // let queued motion finish: the stepper owns the pin while it runs
 +  if (sys.abort) return STATUS_OK;
-+  diag_start(seconds);
++  diag_start(axis, step_bit, seconds);
 +  return STATUS_OK;
 +}
 +
