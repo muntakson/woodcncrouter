@@ -24,7 +24,7 @@ import java.util.Map;
 
 /**
  * ☰ → Wiring and ☰ → CNC setup: how both controller boards connect to the router
- * (MA860H drivers, MK300 spindle inverter, home switches) and the mechanics → $ settings.
+ * (MA860H drivers, MK300 spindle inverter, home sensors) and the mechanics → $ settings.
  * The pictures are AI illustrations (GrblSender/art/gen_images.py); the tables hold the exact values.
  */
 final class SetupPages {
@@ -212,7 +212,7 @@ final class SetupPages {
                 "Illustration (AI-generated). Use the tables below for the exact pins and terminals.");
 
         p(blue ? "Board: Blue Pill STM32F103C8T6 running Grbl 1.1f (robomechs port). Outputs are 3.3 V. "
-                + "PB10–PB12 are 5 V tolerant; the other pins are not."
+                + "The home sensor inputs PB12–PB14 are 5 V tolerant; the step and DIR pins are not."
                 : "Board: Arduino Pro Mini 3.3 V / 8 MHz running Grbl 1.1h (D13 spindle-enable build). Outputs are 3.3 V, "
                 + "and no input tolerates more than 3.3 V.");
 
@@ -288,24 +288,25 @@ final class SetupPages {
         });
         p("Fail-safe: reset, alarm, USB loss and power-up all drop the enable pin, and the spindle decelerates to a stop.");
 
-        h("3. Home / limit switches");
+        h("3. Home sensors");
         table(blue ? new String[][]{
-                {"Switch", "Blue Pill", "Other side"},
-                {"Home X", "PB10", "G"},
-                {"Home Y", "PB11", "G"},
-                {"Home Z", "PB12", "G"},
+                {"Home sensor", "Blue Pill", "Other side"},
+                {"Home X", "PB12", "G"},
+                {"Home Y", "PB13", "G"},
+                {"Home Z", "PB14", "G"},
                 {"Probe (optional)", "PA15", "G"},
         } : new String[][]{
-                {"Switch", "Pro Mini", "Other side"},
+                {"Home sensor", "Pro Mini", "Other side"},
                 {"Home X", "D9", "GND"},
                 {"Home Y", "D10", "GND"},
                 {"Home Z", "D12", "GND"},
                 {"Probe (optional)", "A5", "GND"},
         });
-        p("Grbl uses the internal pull-ups: a pin reads \"triggered\" when it is pulled to GND. "
-                + "Normally-open switches: $5=0. Normally-closed switches (safer, a broken wire stops the machine): $5=1.");
+        p("Grbl calls these inputs \"limit pins\"; on this router they are the home sensors. Grbl uses the internal pull-ups: "
+                + "a pin reads \"triggered\" when it is pulled to GND. Active-low (normally-open) sensors: $5=0. "
+                + "Active-high (normally-closed) sensors: $5=1.");
         p("Inductive proximity sensors (NPN, 12–24 V) must go through a PC817 opto module. Never wire their 24 V "
-                + "output to the " + b + "." + (blue ? " PB10–PB12 tolerate 5 V, not 24 V." : ""), WARN);
+                + "output to the " + b + "." + (blue ? " PB12–PB14 tolerate 5 V, not 24 V." : ""), WARN);
         p("Homing settings to start with: $22=1 (homing on), $23 = direction mask (bit 0 X, bit 1 Y, bit 2 Z; set a bit if that "
                 + "axis homes toward +), $24=25 (feed), $25=500 (seek), $26=250 (debounce), $27=2 (pull-off mm). Grbl homes Z first, then X and Y. "
                 + "After homing, $20=1 (soft limits) uses $130–$132 from the CNC setup page.");
@@ -321,7 +322,7 @@ final class SetupPages {
         body.removeAllViews();
         image(R.drawable.art_wiring_fluidnc,
                 "Macrobase 6-axis ESP32 card (vendor photo): driver terminals on top, spindle / mist on the right, "
-                + "probe, limit and macro pins on the right header, USB and TF card at the bottom.", 0.6f);
+                + "probe, home sensor (LIM) and macro pins on the right header, USB and TF card at the bottom.", 0.6f);
         p("Board: Macrobase 6-axis ESP32 card running FluidNC. Step, dir and enable go out through I2S shift registers; "
                 + "every pin is set in config.yaml on the board, not in $ settings. Supply 12–24 V DC to the board "
                 + "(it cuts off above 30 V); USB alone only powers the ESP32.");
@@ -352,17 +353,18 @@ final class SetupPages {
                 + "exactly as for the other boards (GPIO12 → 150 Ω → PC817 pin 1, GND → pin 2, pin 4 → X1, pin 3 → COM). "
                 + "Never connect the card to X1 directly: X1 sits at about +24 V.", WARN);
 
-        h("3. Home / limit switches and probe");
+        h("3. Home sensors and probe");
         table(new String[][]{
-                {"Switch", "Card terminal", "ESP32 pin"},
+                {"Home sensor", "Card terminal", "ESP32 pin"},
                 {"Home X", "X-LIM", "GPIO33 (active low)"},
                 {"Home Y", "Y-LIM", "GPIO32 (active low)"},
                 {"Home Z", "Z-LIM", "GPIO35 (active low)"},
                 {"Probe", "PROBE", "GPIO34 (active low)"},
                 {"Feed hold", "", "GPIO36"},
-                {"Other side of each switch", "GND", ""},
+                {"Sensor ground", "GND", ""},
         });
-        p("Normally-open switches to GND. GPIO34–36 are input-only and have no internal pull-up; the card supplies them. "
+        p("Active-low home sensors: the input is about 3 V when idle and pulled to GND when the sensor fires. The card labels the "
+                + "terminals X-LIM / Y-LIM / Z-LIM and FluidNC calls them limit_all_pin; on this router they are the home sensors. GPIO34–36 are input-only and have no internal pull-up; the card supplies them. "
                 + "Homing (cycle, direction, speeds, pull-off) is set per axis under axes/…/homing in config.yaml, not with $22–$27. "
                 + "Inductive 12–24 V sensors must go through an opto module.");
 
@@ -560,8 +562,8 @@ final class SetupPages {
 
         // ---- Axes & homing
         h("Axes & homing");
-        p("DIR invert: tick an axis that moves the wrong way (its position counts up while it moves towards the home switch "
-                + "at the minus end, for example). Home toward: the end of the axis where its home switch sits. "
+        p("DIR invert: tick an axis that moves the wrong way (its position counts up while it moves towards the home sensor "
+                + "at the minus end, for example). Home toward: the end of the axis where its home sensor sits. "
                 + (fluid ? "FluidNC homes Z first, then X and Y together (Apply sets homing cycle 1 for Z and 2 for X/Y)."
                          : "Grbl homes Z first, then X and Y together (fixed in the firmware)."));
         LinearLayout head = row();
@@ -671,14 +673,14 @@ final class SetupPages {
             }
         };
         d.setOnShowListener(x -> homeState.post(homeWatch));
-        p("Home all runs Z first, then X and Y together. Each axis moves towards its home switch at the home seek speed, "
+        p("Home all runs Z first, then X and Y together. Each axis moves towards its home sensor at the home seek speed, "
                 + "backs off, touches it again slowly and sets that position as machine zero. Apply your changes before homing.\n"
                 + "E-STOP: soft reset – motion stops at once (homing too), Grbl goes to ALARM and the position is lost; "
                 + "unlock with $X or home again. It is software only: keep the machine's hardware E-stop within reach. "
                 + "Hold: decelerates and pauses (not during homing, which only E-STOP stops); Resume continues.", DIM);
         TextView axisNote = p("", DIM);
-        p("Travel is how far each axis can move; homing searches up to 1.1 × (FluidNC) or 1.5 × (Grbl) of it for the switch, "
-                + "so it must be at least the real travel (X 2500, Y 1325 on this bed). Home seek is the speed towards the switch; "
+        p("Travel is how far each axis can move; homing searches up to 1.1 × (FluidNC) or 1.5 × (Grbl) of it for the home sensor, "
+                + "so it must be at least the real travel (X 2500, Y 1325 on this bed). Home seek is the speed towards the sensor; "
                 + "it then backs off and touches it again slowly.");
 
         final AxisState[] state = new AxisState[1];
@@ -749,7 +751,7 @@ final class SetupPages {
                 if (dir) { n++; b.append(AX[i]).append(" DIR ").append(r.dirInvert.isChecked() ? "inverted" : "normal").append(" · "); }
                 if (side) { n++; b.append(AX[i]).append(" homes toward ").append(AX[i]).append(r.homeMinus.isChecked() ? "−" : "+").append(" · "); }
                 if (dir && side) warn.append("\n⚠ ").append(AX[i]).append(": inverting DIR and switching the home side together leaves homing moving "
-                        + "the same physical way as before. If ").append(AX[i]).append(" homes away from its switch, change only one of them.");
+                        + "the same physical way as before. If ").append(AX[i]).append(" homes away from its home sensor, change only one of them.");
                 if (num(r.rate) != st.rate[i]) { n++; b.append(AX[i]).append(" G0 speed · "); }
                 if ((fluid || i == 0) && num(r.seek) != st.seek[i]) { n++; b.append(fluid ? AX[i] : "").append(" home seek · "); }
                 if (num(r.travel) != st.travel[i]) { n++; b.append(AX[i]).append(" travel · "); }

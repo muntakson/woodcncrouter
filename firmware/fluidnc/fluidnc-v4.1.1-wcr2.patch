@@ -1,7 +1,7 @@
 From 68cf4765b238fe9f3035c6c432ca32ee8e9c4223 Mon Sep 17 00:00:00 2001
 From: jit <mtshon@gmail.com>
 Date: Mon, 12 Oct 2026 10:17:09 +0900
-Subject: [PATCH] woodcncrouter: M150 wiring check (1 kHz step pulses / DIR
+Subject: [PATCH 1/2] woodcncrouter: M150 wiring check (1 kHz step pulses / DIR
  level), router config.yaml, pin espressif32 6.12.0
 
 ---
@@ -207,7 +207,7 @@ index 27008cf..3ef51e7 100644
 +  shared_stepper_disable_pin: NO_PIN
 +  shared_stepper_reset_pin: NO_PIN
 +  x:
-+    steps_per_mm: 84.883000
++    steps_per_mm: 81.489998
 +    max_rate_mm_per_min: 1000.000000
 +    acceleration_mm_per_sec2: 30.000000
 +    max_travel_mm: 300.000000
@@ -237,7 +237,7 @@ index 27008cf..3ef51e7 100644
 +        ms3_pin: I2SO.3
 +        reset_pin: NO_PIN
 +  y:
-+    steps_per_mm: 84.883000
++    steps_per_mm: 81.489998
 +    max_rate_mm_per_min: 1000.000000
 +    acceleration_mm_per_sec2: 30.000000
 +    max_travel_mm: 300.000000
@@ -267,8 +267,8 @@ index 27008cf..3ef51e7 100644
 +        ms3_pin: I2SO.6
 +        reset_pin: NO_PIN
 +  z:
-+    steps_per_mm: 1600.000000
-+    max_rate_mm_per_min: 500.000000
++    steps_per_mm: 16.299999
++    max_rate_mm_per_min: 1000.000000
 +    acceleration_mm_per_sec2: 10.000000
 +    max_travel_mm: 300.000000
 +    soft_limits: false
@@ -815,6 +815,44 @@ index 521e983..d8d7e40 100644
  platform_packages = platformio/framework-arduinoespressif32@^3.20017.241212
  extra_scripts =
      FluidNC/ld/esp32/vtable_in_dram.py
+-- 
+2.43.0
+
+
+From 6cf39d19cd3e4d29d1b29ab90e9ae4f8508fc48e Mon Sep 17 00:00:00 2001
+From: jit <jit@rongrongcom>
+Date: Wed, 14 Oct 2026 10:25:10 +0900
+Subject: [PATCH 2/2] woodcncrouter: rearm home sensors and unblock motors when
+ homing fails or is reset
+
+---
+ FluidNC/src/Machine/Homing.cpp | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/FluidNC/src/Machine/Homing.cpp b/FluidNC/src/Machine/Homing.cpp
+index 27b5833..cad2255 100644
+--- a/FluidNC/src/Machine/Homing.cpp
++++ b/FluidNC/src/Machine/Homing.cpp
+@@ -255,6 +255,19 @@ namespace Machine {
+         send_alarm(alarm);
+         Axes::set_homing_mode(_cycleAxes, false);  // tell motors homing is done...failed
+         Axes::set_disable(Stepping::_idleMsecs != 255, false);
++
++        // woodcncrouter: a home sensor that fires in an approach phase is disarmed and its
++        // motor stops stepping; only the pull-off phase rearms it. When homing fails or is
++        // reset before that, leave the approach phase, let every motor step again and rearm
++        // every home sensor, so a released sensor reads open again instead of staying
++        // "triggered" (stale Pn:, ALARM:12 on the next $H, moves that never step).
++        _phase = Phase::None;
++        for (axis_t axis = X_AXIS; axis < Axes::_numberAxis; axis++) {
++            Stepping::unlimit(axis, motor_t(0));
++            Stepping::unlimit(axis, motor_t(1));
++        }
++        AxisMask allAxes = (1 << Axes::_numberAxis) - 1;
++        config->_kinematics->rearmLimits(allAxes, Axes::axes_to_motors(allAxes));
+     }
+ 
+     bool Homing::needsPulloff2(MotorMask motors) {
 -- 
 2.43.0
 

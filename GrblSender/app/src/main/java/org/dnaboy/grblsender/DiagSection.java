@@ -30,8 +30,8 @@ import java.util.Map;
  *  - X / Y / Z / A test sets that axis's work zero here and runs one real cycle, e.g. G1 X100 F500 then
  *    G1 X0 (Z only goes 20 mm up), so step pulses and both DIR levels can be watched on a scope while
  *    the axis moves. The live work position of all axes is shown under the buttons.
- *  - Home sensors: live state of the X / Y / Z limit (home) switch inputs from the "Pn:" field of Grbl's
- *    status report. Grbl applies $5 (limit pin invert) first, so a letter there means "switch triggered";
+ *  - Home sensors: live state of the X / Y / Z home sensor inputs (Grbl and FluidNC call them limit pins) from
+ *    the "Pn:" field of the status report. Grbl applies $5 first, so a letter there means "sensor triggered";
  *    it reports the pins whether or not homing ($22) or hard limits ($21) are on.
  */
 final class DiagSection {
@@ -304,6 +304,10 @@ final class DiagSection {
         if (settings(Math.min(axis, 2)) == null) return;
         if (!hasAxis(axis)) return;
         String n = AXES[axis];
+        if (axis < 3 && host.pins().contains(n))
+            host.log("⚠ " + n + " home sensor reads TRIGGERED. If it stays like that after an interrupted homing, FluidNC "
+                    + "older than v4.1.1-wcr2 sends no step pulses to " + n + " (the move reports ok but the motor stands still) "
+                    + "– restart the board, then check Diagnosis → Home sensors.");
         host.send("G10L20P0" + n + "0");               // work zero of this axis at the current position
         host.send("G90G21G1" + n + TEST_MM[axis] + "F" + TEST_FEED);
         host.send("G1" + n + "0");
@@ -328,7 +332,7 @@ final class DiagSection {
         testState.setText("Stopping…");
     }
 
-    /** Live work position of every axis and the home switch states while the page is open. */
+    /** Live work position of every axis and the home sensor states while the page is open. */
     private final Runnable posWatch = new Runnable() {
         @Override public void run() {
             if (testPos == null) return;
@@ -409,7 +413,7 @@ final class DiagSection {
         if (!on) homeOther.setText("Not connected to the controller");
         else {
             StringBuilder o = new StringBuilder();
-            String[][] names = {{"A", "A limit"}, {"P", "Probe"}, {"D", "Door"}, {"H", "Feed hold"}, {"R", "Reset"}, {"S", "Cycle start"}};
+            String[][] names = {{"A", "A home sensor"}, {"P", "Probe"}, {"D", "Door"}, {"H", "Feed hold"}, {"R", "Reset"}, {"S", "Cycle start"}};
             for (String[] n : names) if (pins.contains(n[0])) o.append(o.length() > 0 ? ", " : "").append(n[1]);
             homeOther.setText("Other active inputs: " + (o.length() > 0 ? o : "none")
                     + (host.machineState().startsWith("Alarm") ? "   (Grbl is in ALARM – $X unlocks)" : ""));
@@ -419,21 +423,26 @@ final class DiagSection {
 
     private String homeHelp() {
         String pinsTxt;
-        if (host.fluidnc()) pinsTxt = "Inputs (config.yaml limit_all_pin): X gpio.33, Y gpio.32, Z gpio.35 – active low.";
-        else if (host.proMini()) pinsTxt = "Pins: X D9, Y D10, Z D12 – internal pull-up, a switch to GND triggers (unless $5 inverts).";
-        else pinsTxt = "Pins: X PB12, Y PB13, Z PB14 – internal pull-up, a switch to GND triggers (unless $5 inverts).";
+        if (host.fluidnc()) pinsTxt = "Inputs: X gpio.33, Y gpio.32, Z gpio.35, active low (card terminals X-LIM / Y-LIM / Z-LIM, "
+                + "limit_all_pin in config.yaml – FluidNC calls the home sensors limit switches).";
+        else if (host.proMini()) pinsTxt = "Pins: X D9, Y D10, Z D12 – internal pull-up, pulled to GND = triggered (unless $5 inverts).";
+        else pinsTxt = "Pins: X PB12, Y PB13, Z PB14 – internal pull-up, pulled to GND = triggered (unless $5 inverts).";
         String hom = host.grblSettings().get("$22"), hard = host.grblSettings().get("$21");
-        String state = "$21 hard limits = " + (hard != null ? hard : "?") + ", $22 homing = " + (hom != null ? hom : "?");
+        String state = "$22 homing = " + (hom != null ? hom : "?") + ", $21 hard limits (stop when a home sensor fires outside homing) = "
+                + (hard != null ? hard : "?");
+        String how = "Bring metal to each home sensor (or trigger it by hand): its box turns red (TRIGGERED) and back to green (open) "
+                + "when you take it away.\n" + pinsTxt + "\n";
         if (host.fluidnc())
-            return "Press each home switch by hand: its box turns red (TRIGGERED) and back to green (open) on release.\n"
-                    + pinsTxt + "\n"
-                    + "If a box is red with nothing pressed, the switch is normally closed or the input is floating – remove or add"
-                    + " \":low\" on that limit_all_pin in config.yaml (FluidNC has no $5) or check the wiring.\n" + state;
+            return how
+                    + "If a box is red with nothing at the sensor: measure the input. About 3 V means the sensor is idle – restart "
+                    + "the board (after an interrupted homing, FluidNC older than v4.1.1-wcr2 keeps the sensor \"triggered\" and that "
+                    + "axis will not move). Near 0 V means the sensor or its wiring pulls the input low. If the boxes are green when "
+                    + "triggered and red when idle, remove or add \":low\" on that limit_all_pin in config.yaml (FluidNC has no $5).\n"
+                    + state;
         String inv = host.grblSettings().get("$5");
-        return "Press each home switch by hand: its box turns red (TRIGGERED) and back to green (open) on release.\n"
-                + pinsTxt + "\n"
-                + "If a box is red with nothing pressed, the switch is normally closed or the input is floating – flip $5 "
-                + "(limit pin invert) or check the wiring.\n"
+        return how
+                + "If a box is red with nothing at the sensor, the input is floating or the polarity is reversed – flip $5 "
+                + "(home sensor input invert) or check the wiring.\n"
                 + "$5 = " + (inv != null ? inv : "?") + ", " + state
                 + (inv == null && host.connected() ? " (send $$ to read them)" : "");
     }

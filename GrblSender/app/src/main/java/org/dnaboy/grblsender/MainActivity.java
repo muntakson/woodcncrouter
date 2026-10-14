@@ -117,7 +117,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private int statusAxes = 3;
     private boolean wposKnown = false;
     private String machineState = "";
-    /** Input pins Grbl reports as active ("Pn:" field: X Y Z A limits, P probe, D door, H hold, R reset, S start). */
+    /** Input pins Grbl reports as active ("Pn:" field: X Y Z A home sensors, P probe, D door, H hold, R reset, S start). */
     private String pinState = "";
     /** Grbl motion settings ($11, $12, $110-112, $120-122) for run-time estimates; read from $$ on connect. */
     private final TimeEstimator.Limits limits = new TimeEstimator.Limits();
@@ -856,6 +856,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             pump();
             updateProgress();
             return;
+        }
+        if (line.contains("Ambiguous limit switch")) {
+            log("ℹ FluidNC says \"limit switch\" for the home sensors: a home sensor reads triggered, so homing will not start. "
+                    + "Check Settings → Diagnosis → Home sensors. If one shows TRIGGERED with nothing in front of it after an "
+                    + "interrupted homing, restart the board (firmware older than v4.1.1-wcr2 keeps it stuck until a restart).");
         }
         String fluid = fluidToGrbl(line);
         String setting = fluid != null ? fluid : line;
@@ -3085,7 +3090,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             @Override public void resume() { writeRaw(new byte[]{'~'}); log(">> ~ (resume)"); }
             @Override public String machineStatus() {
                 return String.format(Locale.US, "State: %s   MPos X %.3f  Y %.3f  Z %.3f%s", machineState.isEmpty() ? "–" : machineState,
-                        mpos[0], mpos[1], mpos[2], pinState.isEmpty() ? "" : "   switches: " + pinState);
+                        mpos[0], mpos[1], mpos[2], pinState.isEmpty() ? "" : "   active inputs: " + pinState);
             }
         });
     }
@@ -3106,7 +3111,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     + "Flashing: ESP32 ROM bootloader over USB (Settings → Firmware), woodcncrouter build v4.1.1-wcr1 with M150\n"
                     + "RX buffer: not reported – streams with 127 bytes\n"
                     + "Pins: steps/dir/enable through I2S shift registers · spindle on/off GPIO12 · PWM GPIO27 · "
-                    + "limits X GPIO33, Y GPIO32, Z GPIO35 · probe GPIO34 · feed hold GPIO36";
+                    + "home sensors X GPIO33, Y GPIO32, Z GPIO35 · probe GPIO34 · feed hold GPIO36";
         }
         if (BOARD_BLUEPILL.equals(b)) {
             return "Firmware: Grbl 1.1f (robomechs STM32F103 port), image at 0x08002000\n"
@@ -3114,14 +3119,14 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     + "USB: native USB serial 0483:5740 (baud setting ignored)\n"
                     + "Flashing: STM32duino bootloader over USB DFU (1EAF:0003)\n"
                     + "RX buffer: 254 bytes · reports 4 axes (A is ignored)\n"
-                    + "Pins: spindle on/off PB13 · PWM PA8 · step PA0–PA2 · dir PA3–PA5 · disable PA6 · limits PB10–PB12 · probe PA15";
+                    + "Pins: spindle on/off PB13 · PWM PA8 · step PA0–PA2 · dir PA3–PA5 · disable PA6 · home sensors PB12–PB14 · probe PA15";
         }
         return "Firmware: Grbl 1.1h (gnea/grbl), 8 MHz build, D13 spindle enable\n"
                 + "MCU: ATmega328P, 3.3 V / 8 MHz, 32 KB flash · settings in EEPROM\n"
                 + "USB: CH340 serial at 38400 baud\n"
                 + "Flashing: Arduino bootloader (STK500v1, 57600 baud)\n"
                 + "RX buffer: 128 bytes\n"
-                + "Pins: spindle on/off D13 · PWM D11 · step D2–D4 · dir D5–D7 · enable D8 · limits D9/D10/D12 · probe A5";
+                + "Pins: spindle on/off D13 · PWM D11 · step D2–D4 · dir D5–D7 · enable D8 · home sensors D9/D10/D12 · probe A5";
     }
 
     /** Settings → General: controller board, backoffice server, remote control. */
