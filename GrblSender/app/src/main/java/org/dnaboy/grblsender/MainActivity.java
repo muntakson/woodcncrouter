@@ -306,6 +306,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         });
 
         findViewById(R.id.btnUnlock).setOnClickListener(v -> queueCommand("$X"));
+        findViewById(R.id.btnGoG54).setOnClickListener(v -> goG54());
         findViewById(R.id.btnHome).setOnClickListener(v -> home(""));
         findViewById(R.id.btnHomeX).setOnClickListener(v -> home("X"));
         findViewById(R.id.btnHomeY).setOnClickListener(v -> home("Y"));
@@ -456,6 +457,19 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         int n;
         while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
         return bo.toByteArray();
+    }
+
+    /** Rapids to the G54 origin (X0 Y0 Z0). Below Z0 it lifts to Z0 first, otherwise it moves X/Y before lowering. */
+    private void goG54() {
+        if (machineState.startsWith("Alarm")) { log("Grbl is in ALARM – unlock ($X) or home first"); return; }
+        queueCommand("G54");
+        if (wposKnown && wpos[2] < 0) {
+            queueCommand("G90G0Z0");
+            queueCommand("G0X0Y0");
+        } else {
+            queueCommand("G90G0X0Y0");
+            queueCommand("G0Z0");
+        }
     }
 
     /** Sends a file to FluidNC's local filesystem with $Xmodem/Receive=<name> (e.g. a new config.yaml). */
