@@ -32,11 +32,11 @@ axes:
     steps_per_mm: 84.882996
     max_rate_mm_per_min: 2000.000000
     acceleration_mm_per_sec2: 30.000000
-    max_travel_mm: 300.000000
+    max_travel_mm: 2500.000000
     soft_limits: false
     idle_disable: true
     homing:
-      cycle: 1
+      cycle: 2
       allow_single_axis: true
       positive_direction: false
       mpos_mm: 0.000000
@@ -63,11 +63,11 @@ axes:
     steps_per_mm: 84.882996
     max_rate_mm_per_min: 2000.000000
     acceleration_mm_per_sec2: 30.000000
-    max_travel_mm: 300.000000
+    max_travel_mm: 1325.000000
     soft_limits: false
     idle_disable: true
     homing:
-      cycle: 1
+      cycle: 2
       allow_single_axis: true
       positive_direction: false
       mpos_mm: 0.000000
