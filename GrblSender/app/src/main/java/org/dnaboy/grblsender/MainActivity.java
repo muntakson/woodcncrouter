@@ -178,7 +178,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     // Views
     private Spinner baudSpinner;
     private Button btnConnect, btnRun, btnLoad, tabEditor, tabConsole;
-    private TextView txtState, txtPos, txtMPos, txtFile, txtJob, txtLog;
+    private TextView txtState, txtPos, txtMPos, txtHome, txtFile, txtJob, txtLog;
     private ScrollView logScroll;
     private ProgressBar progress;
     private EditText cmdInput, jogFeed;
@@ -263,6 +263,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         txtState = findViewById(R.id.txtState);
         txtPos = findViewById(R.id.txtPos);
         txtMPos = findViewById(R.id.txtMPos);
+        txtHome = findViewById(R.id.txtHome);
         txtFile = findViewById(R.id.txtFile);
         txtJob = findViewById(R.id.txtJob);
         txtLog = findViewById(R.id.txtLog);
@@ -753,6 +754,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         closePort();
         machineState = "";
         pinState = "";
+        showHomeSensors(null);
         afterBanner = null;
         if (captureBuf != null) finishCapture(null);
         txtState.setText("Disconnected");
@@ -1046,6 +1048,22 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 .show();
     }
 
+    /** X / Y / Z home sensors from the status report's Pn: field (Grbl calls them limit pins); red = triggered. */
+    private void showHomeSensors(String pins) {
+        android.text.SpannableStringBuilder b = new android.text.SpannableStringBuilder("Home");
+        for (char ax : new char[]{'X', 'Y', 'Z'}) {
+            b.append("  ").append(ax).append(' ');
+            int start = b.length();
+            boolean hit = pins != null && pins.indexOf(ax) >= 0;
+            b.append(pins == null ? "–" : hit ? "TRIG" : "open");
+            if (hit) {
+                b.setSpan(new android.text.style.ForegroundColorSpan(0xFFFF5555), start, b.length(), 0);
+                b.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), start, b.length(), 0);
+            }
+        }
+        txtHome.setText(b);
+    }
+
     private void parseStatus(String line) {
         String body = line.substring(1, line.endsWith(">") ? line.length() - 1 : line.length());
         String[] fields = body.split("\\|");
@@ -1073,6 +1091,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
         txtPos.setText(dro(w));
         txtMPos.setText(String.format(Locale.US, "MPos %.3f, %.3f, %.3f", mpos[0], mpos[1], mpos[2]));
+        showHomeSensors(pins);
         txtState.setText(machineState + (streaming ? "  ▶" : ""));
         int color;
         if (machineState.startsWith("Alarm")) color = 0xFFFF5555;

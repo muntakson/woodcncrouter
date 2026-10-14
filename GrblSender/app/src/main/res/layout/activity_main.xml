@@ -246,6 +246,16 @@
                                 android:text="MPos 0.000, 0.000, 0.000"
                                 android:textColor="@color/muted"
                                 android:textSize="10sp" />
+
+                            <TextView
+                                android:id="@+id/txtHome"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:fontFamily="monospace"
+                                android:singleLine="true"
+                                android:text="Home X –  Y –  Z –"
+                                android:textColor="@color/muted"
+                                android:textSize="10sp" />
                         </LinearLayout>
 
                         <LinearLayout

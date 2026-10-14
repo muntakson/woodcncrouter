@@ -11,8 +11,8 @@ android {
         applicationId 'org.dnaboy.grblsender'
         minSdk 21
         targetSdk 34
-        versionCode 52
-        versionName '1.51'
+        versionCode 53
+        versionName '1.52'
         buildConfigField 'String', 'BUILD_TIME', "\"${new Date().format('yyyy-MM-dd HH:mm')}\""
         buildConfigField 'String', 'LOG_SERVER', '"https://cnc.iotok.org"'
         buildConfigField 'String', 'INGEST_KEY', "\"${backofficeEnv.getProperty('INGEST_KEY', '')}\""
