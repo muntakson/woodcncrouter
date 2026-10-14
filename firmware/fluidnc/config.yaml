@@ -2,7 +2,7 @@ board: 6 Pack
 name: 6 Pack StepStick XYZABC
 meta:
 stepping:
-  engine: I2S_stream
+  engine: I2S
   idle_ms: 250
   pulse_us: 4
   dir_delay_us: 6
@@ -12,6 +12,8 @@ i2so:
   bck_pin: gpio.22
   data_pin: gpio.21
   ws_pin: gpio.17
+  min_pulse_us: 2
+  oe_pin: NO_PIN
 spi:
   miso_pin: gpio.19
   mosi_pin: gpio.23
@@ -25,12 +27,14 @@ kinematics:
 axes:
   shared_stepper_disable_pin: NO_PIN
   shared_stepper_reset_pin: NO_PIN
-  x:
-    steps_per_mm: 84.883000
+  homing_runs: 2
+  X:
+    steps_per_mm: 84.882996
     max_rate_mm_per_min: 1000.000000
     acceleration_mm_per_sec2: 30.000000
     max_travel_mm: 300.000000
     soft_limits: false
+    idle_disable: true
     homing:
       cycle: 1
       allow_single_axis: true
@@ -44,23 +48,24 @@ axes:
     motor0:
       limit_neg_pin: NO_PIN
       limit_pos_pin: NO_PIN
-      limit_all_pin: gpio.33:low:pu
+      limit_all_pin: 'gpio.33:low:pu'
       hard_limits: false
       pulloff_mm: 1.000000
       stepstick:
         step_pin: I2SO.2
-        direction_pin: I2SO.1
+        direction_pin: I2SO.1:low
         disable_pin: I2SO.0
         ms1_pin: NO_PIN
         ms2_pin: NO_PIN
         ms3_pin: I2SO.3
         reset_pin: NO_PIN
-  y:
-    steps_per_mm: 84.883000
+  Y:
+    steps_per_mm: 84.882996
     max_rate_mm_per_min: 1000.000000
     acceleration_mm_per_sec2: 30.000000
     max_travel_mm: 300.000000
     soft_limits: false
+    idle_disable: true
     homing:
       cycle: 1
       allow_single_axis: true
@@ -74,7 +79,7 @@ axes:
     motor0:
       limit_neg_pin: NO_PIN
       limit_pos_pin: NO_PIN
-      limit_all_pin: gpio.32:low
+      limit_all_pin: 'gpio.32:low'
       hard_limits: false
       pulloff_mm: 1.000000
       stepstick:
@@ -85,12 +90,13 @@ axes:
         ms2_pin: NO_PIN
         ms3_pin: I2SO.6
         reset_pin: NO_PIN
-  z:
+  Z:
     steps_per_mm: 1600.000000
     max_rate_mm_per_min: 500.000000
     acceleration_mm_per_sec2: 10.000000
     max_travel_mm: 300.000000
     soft_limits: false
+    idle_disable: true
     homing:
       cycle: 1
       allow_single_axis: true
@@ -104,7 +110,7 @@ axes:
     motor0:
       limit_neg_pin: NO_PIN
       limit_pos_pin: NO_PIN
-      limit_all_pin: gpio.35:low
+      limit_all_pin: 'gpio.35:low'
       hard_limits: false
       pulloff_mm: 1.000000
       stepstick:
@@ -115,12 +121,13 @@ axes:
         ms2_pin: NO_PIN
         ms3_pin: I2SO.11
         reset_pin: NO_PIN
-  a:
+  A:
     steps_per_mm: 800.000000
     max_rate_mm_per_min: 5000.000000
     acceleration_mm_per_sec2: 100.000000
     max_travel_mm: 960.000000
     soft_limits: false
+    idle_disable: true
     homing:
       cycle: -1
       allow_single_axis: true
@@ -134,7 +141,7 @@ axes:
     motor0:
       limit_neg_pin: NO_PIN
       limit_pos_pin: NO_PIN
-      limit_all_pin: gpio.16:low:pu
+      limit_all_pin: 'gpio.16:low:pu'
       hard_limits: true
       pulloff_mm: 3.000000
       stepstick:
@@ -145,12 +152,13 @@ axes:
         ms2_pin: NO_PIN
         ms3_pin: I2SO.14
         reset_pin: NO_PIN
-  b:
+  B:
     steps_per_mm: 800.000000
     max_rate_mm_per_min: 5000.000000
     acceleration_mm_per_sec2: 100.000000
     max_travel_mm: 200.000000
     soft_limits: false
+    idle_disable: true
     homing:
       cycle: -1
       allow_single_axis: true
@@ -175,12 +183,13 @@ axes:
         ms2_pin: NO_PIN
         ms3_pin: I2SO.19
         reset_pin: NO_PIN
-  c:
+  C:
     steps_per_mm: 800.000000
     max_rate_mm_per_min: 5000.000000
     acceleration_mm_per_sec2: 100.000000
     max_travel_mm: 200.000000
     soft_limits: false
+    idle_disable: true
     homing:
       cycle: -1
       allow_single_axis: true
@@ -216,21 +225,28 @@ control:
   macro3_pin: NO_PIN
   fault_pin: NO_PIN
   estop_pin: NO_PIN
+  homing_button_pin: NO_PIN
+  single_block_pin: NO_PIN
 coolant:
   flood_pin: NO_PIN
   mist_pin: gpio.4
   delay_ms: 0
 probe:
-  pin: gpio.34:low
+  pin: 'gpio.34:low'
   toolsetter_pin: NO_PIN
   check_mode_start: true
+  hard_stop: false
+  probe_hard_limit: false
 macros:
   startup_line0:
   startup_line1:
-  macro0: $SD/Run=test.nc
-  macro1: $SD/Run=test.nc
-  macro2: $SD/Run=test.nc
-  macro3: $SD/Run=test.nc
+  Macro0: $SD/Run=test.nc
+  Macro1: $SD/Run=test.nc
+  Macro2: $SD/Run=test.nc
+  Macro3: $SD/Run=test.nc
+  after_homing:
+  after_reset:
+  after_unlock:
 start:
   must_home: false
   deactivate_parking: false
@@ -259,18 +275,33 @@ user_outputs:
   digital5_pin: NO_PIN
   digital6_pin: NO_PIN
   digital7_pin: NO_PIN
+user_inputs:
+  digital0_pin: NO_PIN
+  digital1_pin: NO_PIN
+  digital2_pin: NO_PIN
+  digital3_pin: NO_PIN
+  digital4_pin: NO_PIN
+  digital5_pin: NO_PIN
+  digital6_pin: NO_PIN
+  digital7_pin: NO_PIN
+  analog0_pin: NO_PIN
+  analog1_pin: NO_PIN
+  analog2_pin: NO_PIN
+  analog3_pin: NO_PIN
 PWM:
   pwm_hz: 5000
   direction_pin: NO_PIN
   output_pin: gpio.27
   enable_pin: gpio.12
-  disable_with_s0: false
-  s0_with_disable: true
-  spinup_ms: 1000
-  spindown_ms: 1000
   tool_num: 0
   speed_map: 0=0.00% 1000=100.00%
   off_on_alarm: false
+  atc:
+  m6_macro:
+  s0_with_disable: true
+  disable_with_s0: false
+  spinup_ms: 1000
+  spindown_ms: 1000
 arc_tolerance_mm: 0.002000
 junction_deviation_mm: 0.010000
 verbose_errors: false
