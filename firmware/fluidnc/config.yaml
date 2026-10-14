@@ -69,7 +69,7 @@ axes:
     homing:
       cycle: 1
       allow_single_axis: true
-      positive_direction: true
+      positive_direction: false
       mpos_mm: 0.000000
       feed_mm_per_min: 100.000000
       seek_mm_per_min: 200.000000
