@@ -30,6 +30,9 @@ import java.util.Map;
  *  - X / Y / Z / A test sets that axis's work zero here and runs one real cycle, e.g. G1 X100 F500 then
  *    G1 X0 (Z only goes 20 mm up), so step pulses and both DIR levels can be watched on a scope while
  *    the axis moves. The live work position of all axes is shown under the buttons.
+ *  - Home sensors: live state of the X / Y / Z limit (home) switch inputs from the "Pn:" field of Grbl's
+ *    status report. Grbl applies $5 (limit pin invert) first, so a letter there means "switch triggered";
+ *    it reports the pins whether or not homing ($22) or hard limits ($21) are on.
  */
 final class DiagSection {
 
@@ -41,6 +44,8 @@ final class DiagSection {
         float workPos(int axis);
         /** Axes in Grbl's status report: 3, or 4 when the controller has an A axis. */
         int axes();
+        /** Active input pins from the last status report ("Pn:" field), e.g. "XZ"; empty when none. */
+        String pins();
         /** True for the Arduino Pro Mini board (pins D2… instead of PA0…). */
         boolean proMini();
         /** True for the FluidNC ESP32 board: no M150, its step pins sit behind I2S shift registers. */
@@ -78,8 +83,12 @@ final class DiagSection {
     private boolean testing, testMoved, testStopping;
     private int testAxis;
     private long testStartMs;
-    private final Button[] tabBtn = new Button[2];
-    private final View[] tabPage = new View[2];
+    private final TextView[] homeLamp = new TextView[3];
+    private TextView homeOther, homeInfo;
+    private String homeShown;
+    private static final int TABS = 3;
+    private final Button[] tabBtn = new Button[TABS];
+    private final View[] tabPage = new View[TABS];
     /** Tab shown when the page is opened again. */
     private static int lastTab;
 
@@ -94,8 +103,8 @@ final class DiagSection {
         root.addView(Ui.heading(a, "Diagnosis", "Check the X / Y / Z / A step (pulse) and direction outputs with a scope or a logic probe"));
 
         LinearLayout tabs = Ui.row(a);
-        String[] tabNames = {"Pulse / Dir", "Axis test"};
-        for (int i = 0; i < 2; i++) {
+        String[] tabNames = {"Pulse / Dir", "Axis test", "Home sensors"};
+        for (int i = 0; i < TABS; i++) {
             final int t = i;
             tabBtn[i] = Ui.button(a, tabNames[i], 0);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Ui.dp(a, 48), 1);
@@ -109,7 +118,7 @@ final class DiagSection {
         root.addView(status);
         FrameLayout pages = new FrameLayout(a);
         root.addView(pages, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        LinearLayout pulsePage = page(pages, 0), testPage = page(pages, 1);
+        LinearLayout pulsePage = page(pages, 0), testPage = page(pages, 1), homePage = page(pages, 2);
 
         LinearLayout card = Ui.card(a);
         for (int i = 0; i < 4; i++) {
@@ -170,6 +179,27 @@ final class DiagSection {
         tinfo.setPadding(0, Ui.dp(a, 12), 0, 0);
         tcard.addView(tinfo);
         testPage.addView(tcard, Ui.margins(a, 0, 0, 0, 8));
+
+        LinearLayout hcard = Ui.card(a);
+        LinearLayout hrow = Ui.row(a);
+        for (int i = 0; i < 3; i++) {
+            homeLamp[i] = Ui.text(a, "", 18, Ui.MUTED);
+            homeLamp[i].setGravity(Gravity.CENTER);
+            homeLamp[i].setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, Ui.dp(a, 96), 1);
+            if (i > 0) lp.leftMargin = Ui.dp(a, 8);
+            hrow.addView(homeLamp[i], lp);
+        }
+        hcard.addView(hrow);
+        homeOther = Ui.text(a, "", 13, Ui.MUTED);
+        homeOther.setPadding(0, Ui.dp(a, 10), 0, 0);
+        hcard.addView(homeOther);
+        homeInfo = Ui.text(a, "", 13, Ui.MUTED);
+        homeInfo.setPadding(0, Ui.dp(a, 12), 0, 0);
+        hcard.addView(homeInfo);
+        homePage.addView(hcard, Ui.margins(a, 0, 0, 0, 8));
+        homeShown = null;
+
         ui.post(posWatch);
         showTab(lastTab);
 
@@ -190,7 +220,7 @@ final class DiagSection {
 
     private void showTab(int t) {
         lastTab = t;
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < TABS; i++) {
             tabPage[i].setVisibility(i == t ? View.VISIBLE : View.GONE);
             tabBtn[i].setBackgroundResource(i == t ? R.drawable.btn_accent : R.drawable.btn_tech);
             tabBtn[i].setTextColor(i == t ? Ui.ACCENT : Ui.TEXT);
@@ -210,7 +240,8 @@ final class DiagSection {
         java.util.Arrays.fill(testBtn, null);
         java.util.Arrays.fill(tabBtn, null);
         java.util.Arrays.fill(tabPage, null);
-        testPos = testState = null;
+        java.util.Arrays.fill(homeLamp, null);
+        testPos = testState = homeOther = homeInfo = null;
         info = status = null;
     }
 
@@ -297,10 +328,11 @@ final class DiagSection {
         testState.setText("Stopping…");
     }
 
-    /** Live work position of every axis while the page is open. */
+    /** Live work position of every axis and the home switch states while the page is open. */
     private final Runnable posWatch = new Runnable() {
         @Override public void run() {
             if (testPos == null) return;
+            showHome();
             if (!host.connected()) testPos.setText("X —  Y —  Z —");
             else {
                 StringBuilder b = new StringBuilder();
@@ -352,6 +384,58 @@ final class DiagSection {
             testBtn[i].setTextColor(Ui.TEXT);
         }
         testState.setText(msg);
+    }
+
+    // ---------------------------------------------------------------- X / Y / Z home sensors
+
+    private void showHome() {
+        if (homeLamp[0] == null) return;
+        boolean on = host.connected();
+        String pins = on ? host.pins() : "";
+        String key = (on ? "c" : "d") + host.machineState() + "|" + pins;
+        if (key.equals(homeShown)) return;
+        homeShown = key;
+        for (int i = 0; i < 3; i++) {
+            boolean hit = on && pins.indexOf(AXES[i].charAt(0)) >= 0;
+            int color = !on ? Ui.MUTED : hit ? Ui.ERR : Ui.OK;
+            homeLamp[i].setText(AXES[i] + " home\n" + (!on ? "—" : hit ? "TRIGGERED" : "open"));
+            homeLamp[i].setTextColor(color);
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setCornerRadius(Ui.dp(a, 8));
+            bg.setColor(hit ? 0x33FF5C6C : Ui.PANEL2);
+            bg.setStroke(Ui.dp(a, 2), color);
+            homeLamp[i].setBackground(bg);
+        }
+        if (!on) homeOther.setText("Not connected to the controller");
+        else {
+            StringBuilder o = new StringBuilder();
+            String[][] names = {{"A", "A limit"}, {"P", "Probe"}, {"D", "Door"}, {"H", "Feed hold"}, {"R", "Reset"}, {"S", "Cycle start"}};
+            for (String[] n : names) if (pins.contains(n[0])) o.append(o.length() > 0 ? ", " : "").append(n[1]);
+            homeOther.setText("Other active inputs: " + (o.length() > 0 ? o : "none")
+                    + (host.machineState().startsWith("Alarm") ? "   (Grbl is in ALARM – $X unlocks)" : ""));
+        }
+        homeInfo.setText(homeHelp());
+    }
+
+    private String homeHelp() {
+        String pinsTxt;
+        if (host.fluidnc()) pinsTxt = "Inputs (config.yaml limit_all_pin): X gpio.33, Y gpio.32, Z gpio.35 – active low.";
+        else if (host.proMini()) pinsTxt = "Pins: X D9, Y D10, Z D12 – internal pull-up, a switch to GND triggers (unless $5 inverts).";
+        else pinsTxt = "Pins: X PB12, Y PB13, Z PB14 – internal pull-up, a switch to GND triggers (unless $5 inverts).";
+        String hom = host.grblSettings().get("$22"), hard = host.grblSettings().get("$21");
+        String state = "$21 hard limits = " + (hard != null ? hard : "?") + ", $22 homing = " + (hom != null ? hom : "?");
+        if (host.fluidnc())
+            return "Press each home switch by hand: its box turns red (TRIGGERED) and back to green (open) on release.\n"
+                    + pinsTxt + "\n"
+                    + "If a box is red with nothing pressed, the switch is normally closed or the input is floating – remove or add"
+                    + " \":low\" on that limit_all_pin in config.yaml (FluidNC has no $5) or check the wiring.\n" + state;
+        String inv = host.grblSettings().get("$5");
+        return "Press each home switch by hand: its box turns red (TRIGGERED) and back to green (open) on release.\n"
+                + pinsTxt + "\n"
+                + "If a box is red with nothing pressed, the switch is normally closed or the input is floating – flip $5 "
+                + "(limit pin invert) or check the wiring.\n"
+                + "$5 = " + (inv != null ? inv : "?") + ", " + state
+                + (inv == null && host.connected() ? " (send $$ to read them)" : "");
     }
 
     // ---------------------------------------------------------------- X / Y / Z / A dir

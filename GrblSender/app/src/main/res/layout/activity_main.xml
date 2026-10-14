@@ -255,8 +255,19 @@
                             android:orientation="horizontal">
 
                             <Button android:id="@+id/btnUnlock" style="@style/BtnRow" android:text="$X" />
-                            <Button android:id="@+id/btnHome" style="@style/BtnRow" android:text="$H" />
+                            <Button android:id="@+id/btnHome" style="@style/BtnRow" android:text="Home all" />
                             <Button android:id="@+id/btnReset" style="@style/BtnRow" android:layout_marginEnd="0dp" android:text="Reset" />
+                        </LinearLayout>
+
+                        <!-- single-axis homing ($HX / $HY / $HZ) -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
+
+                            <Button android:id="@+id/btnHomeX" style="@style/BtnRow" android:text="Home X" />
+                            <Button android:id="@+id/btnHomeY" style="@style/BtnRow" android:text="Home Y" />
+                            <Button android:id="@+id/btnHomeZ" style="@style/BtnRow" android:layout_marginEnd="0dp" android:text="Home Z" />
                         </LinearLayout>
 
                         <LinearLayout

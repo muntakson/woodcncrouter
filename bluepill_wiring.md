@@ -425,7 +425,7 @@ $6=0         probe: plate to GND
 $30=20000    max spindle rpm
 $31=0
 $32=0        laser mode off
-$100=81.49  $101=81.49  $102=16.30      steps/mm (see grbl-settings: 500 mm jog still to confirm)
+$100=84.88  $101=84.88  $102=16.98      steps/mm (24T pinion, module 1.25 rack; confirm with a 500 mm jog)
 $110=1000   $111=1000   $112=1000       mm/min
 $120=30     $121=30     $122=10         mm/s²
 ```
@@ -442,5 +442,5 @@ Check `$$` before the first move.
    idle level and how the driver's PUL+/PUL− are wired to it: idle level that lights the opto → step pulses are
    inverted, set `$2=7`.
 4. Driver power on, VFD off. Jog each axis 10 mm at F300. Wrong direction → flip that bit in `$3`.
-5. Jog X by 500 mm and measure, to settle 80.0 vs 81.49 steps/mm.
+5. Jog X by 500 mm and measure, to confirm 84.88 steps/mm.
 6. VFD on, router bit out: `M3 S20000` starts it, `M5` stops it, Ctrl-X and unplugging USB stop it.

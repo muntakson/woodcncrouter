@@ -117,6 +117,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private int statusAxes = 3;
     private boolean wposKnown = false;
     private String machineState = "";
+    /** Input pins Grbl reports as active ("Pn:" field: X Y Z A limits, P probe, D door, H hold, R reset, S start). */
+    private String pinState = "";
     /** Grbl motion settings ($11, $12, $110-112, $120-122) for run-time estimates; read from $$ on connect. */
     private final TimeEstimator.Limits limits = new TimeEstimator.Limits();
     /** Last $$ report ("$100" -> "81.490"), shown on the CNC setup page. */
@@ -232,9 +234,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 }
             } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
                 if (port != null) {
-                    log("USB device detached");
+                    log("USB device detached" + (autoConnectEnabled() ? " – auto-connect will pick it up again when it returns" : ""));
                     disconnect();
                 }
+                autoFails = 0;
+                autoNextMs = 0;
             }
         }
     };
@@ -247,6 +251,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         // RemoteLog's own startup check is replaced by the update checker below (respects the auto-check setting)
         RemoteLog.init(getApplicationContext(), (code, name) -> { });
         ui.postDelayed(autoUpdateCheck, 3000);
+        ui.postDelayed(autoScan, 1500);
         usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
 
         baudSpinner = findViewById(R.id.baud);
@@ -287,10 +292,23 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         baudSpinner.setAdapter(adapter);
         applyBoardToUi();
 
-        btnConnect.setOnClickListener(v -> { if (port == null) connect(); else disconnect(); });
+        btnConnect.setOnClickListener(v -> {
+            if (port == null) {
+                userDisconnected = false;
+                autoAttempt = false;
+                connect();
+            } else {
+                userDisconnected = true;             // no auto-connect until Connect or a replug
+                disconnect();
+                log("Disconnected – auto-connect paused until you tap Connect or replug the board");
+            }
+        });
 
         findViewById(R.id.btnUnlock).setOnClickListener(v -> queueCommand("$X"));
-        findViewById(R.id.btnHome).setOnClickListener(v -> queueCommand("$H"));
+        findViewById(R.id.btnHome).setOnClickListener(v -> home(""));
+        findViewById(R.id.btnHomeX).setOnClickListener(v -> home("X"));
+        findViewById(R.id.btnHomeY).setOnClickListener(v -> home("Y"));
+        findViewById(R.id.btnHomeZ).setOnClickListener(v -> home("Z"));
         findViewById(R.id.btnReset).setOnClickListener(v -> softReset());
         findViewById(R.id.btnZeroXY).setOnClickListener(v -> queueCommand("G10L20P1X0Y0"));
         findViewById(R.id.btnZeroZ).setOnClickListener(v -> queueCommand("G10L20P1Z0"));
@@ -356,7 +374,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         showConsole(false);
         updateTitle();
         updateButtons();
-        log("Grbl Sender " + BuildConfig.VERSION_NAME + " ready. Board: " + boardName(board()) + " (Settings → General). Plug it in and tap Connect.");
+        log("Grbl Sender " + BuildConfig.VERSION_NAME + " ready. Board: " + boardName(board()) + " (Settings → General). "
+                + (autoConnectEnabled() ? "Auto-connect is on: plug the board in." : "Plug it in and tap Connect."));
         jobLog = JobLog.get(this);
         remote = new RemoteControl(this::remoteExecute, jobLog);
         remote.setStateListener((on, detail) -> updateChips());
@@ -393,7 +412,13 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction()) && port == null) connect();
+        if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction()) && port == null) {
+            userDisconnected = false;
+            autoFails = 0;
+            autoNextMs = 0;
+            ui.removeCallbacks(autoScan);
+            ui.postDelayed(autoScan, 300);
+        }
         // adb: am start -n org.dnaboy.grblsender/.MainActivity --ez espProbe true  (bootloader check, writes nothing)
         if (intent.getBooleanExtra("espProbe", false)) startEspProbe();
         // adb: am start -n org.dnaboy.grblsender/.MainActivity --es fluidUpload config.yaml
@@ -433,7 +458,15 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     }
 
     /** Sends a file to FluidNC's local filesystem with $Xmodem/Receive=<name> (e.g. a new config.yaml). */
-    private void startFluidUpload(byte[] content, String name) {
+    private void startFluidUpload(byte[] content, String name) { startFluidUpload(content, name, null); }
+
+    /** @param after called once FluidNC is listening again (2.5 s after the transfer), or right away when it cannot start */
+    private void startFluidUpload(byte[] content, String name, SetupPages.Done after) {
+        if (after != null && (port == null || !boardIsFluid() || streaming || xmodem != null
+                || System.currentTimeMillis() < quietUntilMs || !manualQueue.isEmpty() || !inFlight.isEmpty())) {
+            after.done(false, "the board is busy or not connected");
+            return;
+        }
         if (port == null) { log("FluidNC upload: connect to the board first"); return; }
         if (!boardIsFluid()) { log("FluidNC upload: the selected board is not FluidNC"); return; }
         if (streaming) { log("FluidNC upload: a job is running"); return; }
@@ -461,6 +494,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 // the receiver ends with flushinput(): it drops input until 1.5 s of silence, and any byte
                 // (our status poll) restarts that wait – stay quiet so FluidNC returns to normal
                 quietUntilMs = System.currentTimeMillis() + 2500;
+                if (after != null) ui.postDelayed(() -> after.done(ok, message), 2600);
             }
         });
         DebugLog.cnc(">> $Xmodem/Receive=" + name);
@@ -499,6 +533,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             JobService.stop(this, "App was closed – job aborted at line " + ackedLines + " / " + program.size());
         }
         ui.removeCallbacks(autoUpdateCheck);
+        ui.removeCallbacks(autoScan);
         unregisterReceiver(usbReceiver);
         disconnect();
         if (settingsLeave != null) settingsLeave.run();
@@ -639,6 +674,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     opening = false;
                     btnConnect.setEnabled(true);
                     log("Open failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    if (autoAttempt) autoFailed();
                     RemoteLog.e("usb", "Open failed (" + describe(driver) + ")", e);
                 });
             }
@@ -646,6 +682,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     }
 
     private void onOpened(SerialLink link, UsbSerialDriver driver, int baud, boolean ch340) {
+        bannerSeen = false;
+        if (autoAttempt) ui.postDelayed(() -> autoCheckBanner(link, driver), AUTO_BANNER_MS);
         opening = false;
         btnConnect.setEnabled(true);
         port = link;
@@ -688,6 +726,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         streaming = false;
         closePort();
         machineState = "";
+        pinState = "";
+        afterBanner = null;
+        if (captureBuf != null) finishCapture(null);
         txtState.setText("Disconnected");
         txtState.setTextColor(0xFFAAAAAA);
         updateButtons();
@@ -717,7 +758,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 if (n <= 3) ui.post(() -> log("Write error: " + e.getMessage()));
                 if (n == 3) ui.post(() -> {
                     if (port != p) return;
-                    log("USB link is not responding – disconnected. Unplug the cable from the tablet and plug it back in.");
+                    log("USB link is not responding – disconnected." + (autoConnectEnabled()
+                            ? " Auto-connect will retry; if it keeps failing, replug the cable at the tablet."
+                            : " Unplug the cable from the tablet and plug it back in."));
                     disconnect();
                 });
             }
@@ -744,7 +787,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     String line = raw.trim();
                     if (line.isEmpty()) continue;
                     // indented text (FluidNC's YAML from $CD or $LocalFS/Show) is never a protocol line: keep its indent
-                    if (raw.charAt(0) == ' ') { DebugLog.cnc("<< " + raw); log("<< " + raw); continue; }
+                    if (raw.charAt(0) == ' ') {
+                        DebugLog.cnc("<< " + raw);
+                        if (captureBuf != null) captureBuf.add(raw); else log("<< " + raw);
+                        continue;
+                    }
                     handleLine(line);
                 } else if (c != '\r') {
                     rxLine.append(c);
@@ -787,12 +834,15 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             parseStatus(line);
             return;
         }
-        if (line.equals("ok") || line.startsWith("error:")) {
+        boolean reply = line.equals("ok") || line.startsWith("error:");
+        if (captureBuf != null && !reply && !line.startsWith("[") && !line.startsWith("Grbl ")) { captureBuf.add(line); return; }
+        if (reply) {
             Sent s = inFlight.poll();
             if (s != null) {
                 inFlightBytes -= s.len;
                 if (s.fromProgram) ackedLines++;
             }
+            if (captureBuf != null && inFlight.isEmpty() && manualQueue.isEmpty()) finishCapture(line.equals("ok") ? captureBuf : null);
             boolean silent = s != null && !s.fromProgram && silentAcks > 0;
             if (silent) silentAcks--;
             if (line.startsWith("error:")) {
@@ -825,7 +875,19 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 finishRun(false);
             }
             resetStreamState();
-            checkBannerBoard(line);
+            bannerSeen = true;
+            if (afterBanner != null) { Runnable r = afterBanner; afterBanner = null; ui.postDelayed(r, 1500); }
+            if (autoAttempt) {
+                autoFails = 0;
+                autoTriedAlt = false;
+                if (isSerialBridge(pendingDriver)) {
+                    String b = line.contains("FluidNC") ? BOARD_FLUIDNC : BOARD_PROMINI;
+                    getPreferences(MODE_PRIVATE).edit().putString("lastSerialBoard", b).apply();
+                    if (!b.equals(board())) { log("Auto-connect: the banner says " + boardName(b) + " – board switched"); setBoard(b); }
+                }
+            } else {
+                checkBannerBoard(line);
+            }
         }
         if (line.startsWith("[VER:") || line.startsWith("[OPT:")) {
             String v = line.substring(5, line.length() - (line.endsWith("]") ? 1 : 0));
@@ -844,6 +906,97 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
         if (silentAcks > 0 && line.startsWith("$")) return;
         log("<< " + line);
+    }
+
+    // ---------------------------------------------------------------- Auto-connect
+
+    private static final long AUTO_SCAN_MS = 3000, AUTO_BANNER_MS = 6000;
+    private boolean userDisconnected;            // Disconnect was tapped: wait for Connect or a replug
+    private boolean autoAttempt;                 // the current link was opened by the scanner
+    private boolean bannerSeen;                  // a "Grbl …" banner arrived on the current link
+    private boolean autoTriedAlt;                // the other CH340 board (Pro Mini <-> FluidNC) was tried
+    private int autoFails;
+    private long autoNextMs;
+    private final java.util.Set<String> autoAsked = new java.util.HashSet<>();   // devices we asked permission for
+
+    private boolean autoConnectEnabled() { return getPreferences(MODE_PRIVATE).getBoolean("autoConnect", true); }
+
+    /** Every 3 s while not connected: look for a CNC board on USB and connect to it. */
+    private final Runnable autoScan = new Runnable() {
+        @Override public void run() {
+            ui.removeCallbacks(this);
+            try { autoScanOnce(); } catch (Exception e) { RemoteLog.e("auto", "scan failed", e); }
+            ui.postDelayed(this, AUTO_SCAN_MS);
+        }
+    };
+
+    /** USB-serial bridge (CH340 / CP210x / FTDI): Pro Mini or FluidNC, told apart by the banner. */
+    private static boolean isSerialBridge(UsbSerialDriver d) {
+        if (d == null) return false;
+        int vid = d.getDevice().getVendorId();
+        return vid == VID_CH340 || vid == VID_CP210X || vid == 0x0403;
+    }
+
+    /** Which board this USB device is, or null when it is not a CNC controller we know. */
+    private String cncBoardFor(UsbSerialDriver d) {
+        UsbDevice dev = d.getDevice();
+        if (dev.getVendorId() == DfuFlasher.VID_ST && dev.getProductId() == DfuFlasher.PID_ST_VCP) return BOARD_BLUEPILL;
+        if (!isSerialBridge(d)) return null;
+        if (!BOARD_BLUEPILL.equals(board())) return board();           // keep the selected Pro Mini / FluidNC
+        if (dev.getVendorId() == VID_CP210X) return BOARD_FLUIDNC;
+        return getPreferences(MODE_PRIVATE).getString("lastSerialBoard", BOARD_PROMINI);
+    }
+
+    private void autoScanOnce() {
+        if (!autoConnectEnabled() || userDisconnected || port != null || opening || fwBusy || streaming
+                || espFlasher != null || xmodem != null) return;
+        if (System.currentTimeMillis() < autoNextMs) return;
+        UsbSerialDriver pick = null;
+        String pickBoard = null;
+        for (UsbSerialDriver d : serialProber().findAllDrivers(usbManager)) {
+            String b = cncBoardFor(d);
+            if (b == null) continue;
+            if (pick == null || b.equals(board())) { pick = d; pickBoard = b; }
+        }
+        if (pick == null) return;
+        UsbDevice dev = pick.getDevice();
+        if (!usbManager.hasPermission(dev)) {
+            if (!autoAsked.add(dev.getDeviceName())) return;            // asked once for this plug-in; wait for the answer
+        }
+        if (!pickBoard.equals(board())) {
+            log("Auto-connect: " + describe(pick) + " looks like a " + boardName(pickBoard) + " – board switched");
+            setBoard(pickBoard);
+        }
+        log("Auto-connect: " + boardName(pickBoard) + " found (" + describe(pick) + ")" + (autoFails > 0 ? ", attempt " + (autoFails + 1) : ""));
+        RemoteLog.i("auto", "connect " + describe(pick) + " as " + pickBoard + " fails=" + autoFails);
+        autoAttempt = true;
+        autoNextMs = System.currentTimeMillis() + AUTO_SCAN_MS;
+        connect(pick);
+    }
+
+    /** No Grbl banner after an automatic connect: try the other CH340 board once, then back off and retry. */
+    private void autoCheckBanner(SerialLink link, UsbSerialDriver driver) {
+        if (port != link || bannerSeen || !autoAttempt) return;
+        if (isSerialBridge(driver) && !autoTriedAlt) {
+            autoTriedAlt = true;
+            String other = boardIsFluid() ? BOARD_PROMINI : BOARD_FLUIDNC;
+            log("Auto-connect: no Grbl banner from " + describe(driver) + " as " + boardName(board()) + " – trying " + boardName(other));
+            disconnect();
+            setBoard(other);
+            autoNextMs = 0;
+            return;
+        }
+        log("Auto-connect: no Grbl banner from " + describe(driver) + " – disconnecting and trying again later"
+                + " (if this repeats, replug the USB cable at the tablet)");
+        disconnect();
+        autoFailed();
+    }
+
+    private void autoFailed() {
+        autoFails++;
+        autoTriedAlt = false;
+        long wait = Math.min(30000, AUTO_SCAN_MS << Math.min(4, autoFails - 1));    // 3, 6, 12, 24, 30 s
+        autoNextMs = System.currentTimeMillis() + wait;
     }
 
     /** "Grbl 3.x [FluidNC v3.x …]" says FluidNC; offer to switch when Settings name another CH340 board. */
@@ -868,12 +1021,15 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         machineState = fields[0];
         boolean haveWpos = false;
         float[] w = new float[4];
+        String pins = "";                      // Grbl leaves Pn: out when no input is active
         for (int i = 1; i < fields.length; i++) {
             String f = fields[i];
             if (f.startsWith("MPos:")) statusAxes = parseXYZ(f.substring(5), mpos);
             else if (f.startsWith("WPos:")) { statusAxes = parseXYZ(f.substring(5), w); haveWpos = true; }
             else if (f.startsWith("WCO:")) parseXYZ(f.substring(4), wco);
+            else if (f.startsWith("Pn:")) pins = f.substring(3);
         }
+        pinState = pins;
         if (haveWpos) {
             for (int i = 0; i < 4; i++) mpos[i] = w[i] + wco[i];
         } else {
@@ -974,6 +1130,54 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         pump();
     }
 
+    // ---------------------------------------------------------------- Command output capture
+
+    private java.util.List<String> captureBuf;     // lines of the captured command's reply, until its ok
+    private SetupPages.Lines captureDone;
+    private Runnable afterBanner;                  // runs once after the next "Grbl …" banner (FluidNC restart)
+
+    /** Sends cmd and hands its reply lines (indent kept) to done, or null on error / timeout / busy. */
+    private void captureCommand(String cmd, SetupPages.Lines done) {
+        if (port == null || streaming || xmodem != null || captureBuf != null || !manualQueue.isEmpty() || !inFlight.isEmpty()
+                || System.currentTimeMillis() < quietUntilMs) {
+            done.got(null);
+            return;
+        }
+        captureBuf = new java.util.ArrayList<>();
+        captureDone = done;
+        queueSilent(cmd);
+        ui.postDelayed(captureTimeout, 10000);
+    }
+
+    private final Runnable captureTimeout = () -> { if (captureBuf != null) { log("No complete reply – gave up reading"); finishCapture(null); } };
+
+    private void finishCapture(java.util.List<String> result) {
+        ui.removeCallbacks(captureTimeout);
+        SetupPages.Lines d = captureDone;
+        captureBuf = null;
+        captureDone = null;
+        if (d != null) d.got(result);
+    }
+
+    /** Keeps a copy in Android/data/org.dnaboy.grblsender/files/fluidnc/ (re-upload: am start … --es fluidUpload <name>). */
+    private void saveFluidLocal(String name, String text) {
+        try (java.io.FileOutputStream o = new java.io.FileOutputStream(new java.io.File(getExternalFilesDir("fluidnc"), name))) {
+            o.write(text.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            RemoteLog.e("fluidnc", "save " + name, e);
+        }
+    }
+
+    /** $Bye (FluidNC restarts and loads config.yaml), then re-read the settings once its banner is back. */
+    private void restartFluid(Runnable back) {
+        afterBanner = () -> {
+            queueSilent("$$");
+            if (boardIsFluid()) queryFluidSettings();
+            ui.postDelayed(back, 1500);
+        };
+        queueCommand("$Bye");
+    }
+
     private void sendInput() {
         String cmd = cmdInput.getText().toString().trim();
         if (cmd.isEmpty()) return;
@@ -998,6 +1202,25 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         int feed;
         try { feed = Integer.parseInt(jogFeed.getText().toString()); } catch (NumberFormatException e) { feed = 500; }
         queueCommand(String.format(Locale.US, "$J=G91G21%s%.3fF%d", axis, dir * step, feed));
+    }
+
+    /** $H homes all axes (Z first, then X and Y); $HX / $HY / $HZ one axis – FluidNC only, as our Grbl builds
+     *  leave out HOMING_SINGLE_AXIS_COMMANDS. */
+    private void home(String axis) {
+        if (streaming) { log("Homing is disabled while a job runs"); return; }
+        if (!axis.isEmpty() && !boardIsFluid()) {
+            String m = "Home " + axis + ": single-axis homing needs FluidNC – the Grbl build on the " + boardName(board())
+                    + " only homes all axes (Home all = $H)";
+            log(m);
+            android.widget.Toast.makeText(this, m, android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (port != null && "0".equals(grblSettings.get("$22"))) {
+            String m = "Homing is off ($22=0) – switch it on in CNC setup → Axes & homing";
+            log(m);
+            android.widget.Toast.makeText(this, m, android.widget.Toast.LENGTH_LONG).show();
+        }
+        queueCommand("$H" + axis);
     }
 
     private void softReset() {
@@ -2527,6 +2750,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     @Override public String machineState() { return machineState; }
                     @Override public float workPos(int axis) { return wpos[axis]; }
                     @Override public int axes() { return statusAxes; }
+                    @Override public String pins() { return pinState; }
                     @Override public boolean proMini() { return BOARD_PROMINI.equals(board()); }
                     @Override public boolean fluidnc() { return boardIsFluid(); }
                     @Override public boolean fluidM150() { return boardIsFluid() && fwVersion != null && fwVersion.contains("-wcr"); }
@@ -2851,6 +3075,18 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             @Override public void send(String cmd) { queueCommand(cmd); }
             @Override public void log(String msg) { MainActivity.this.log(msg); }
             @Override public SharedPreferences prefs() { return getPreferences(MODE_PRIVATE); }
+            @Override public void capture(String cmd, SetupPages.Lines done) { captureCommand(cmd, done); }
+            @Override public void uploadFluid(String name, byte[] content, SetupPages.Done done) { startFluidUpload(content, name, done); }
+            @Override public void restartFluid(Runnable back) { MainActivity.this.restartFluid(back); }
+            @Override public void saveLocal(String name, String text) { saveFluidLocal(name, text); }
+            @Override public void home(String axis) { MainActivity.this.home(axis); }
+            @Override public void estop() { log("E-STOP (CNC setup)"); softReset(); }
+            @Override public void hold() { feedHold("tablet"); }
+            @Override public void resume() { writeRaw(new byte[]{'~'}); log(">> ~ (resume)"); }
+            @Override public String machineStatus() {
+                return String.format(Locale.US, "State: %s   MPos X %.3f  Y %.3f  Z %.3f%s", machineState.isEmpty() ? "–" : machineState,
+                        mpos[0], mpos[1], mpos[2], pinState.isEmpty() ? "" : "   switches: " + pinState);
+            }
         });
     }
 
@@ -2933,6 +3169,19 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 + "A change takes effect at the next Connect.", 12, Ui.MUTED);
         note.setPadding(0, Ui.dp(this, 4), 0, 0);
         boardCard.addView(note);
+        android.widget.Switch auto = new android.widget.Switch(this);
+        auto.setText("Auto-connect: scan USB every 3 s and connect to a Pro Mini, Blue Pill or FluidNC board; reconnect after an unplug or a USB error");
+        auto.setTextColor(Ui.TEXT);
+        auto.setTextSize(14);
+        auto.setChecked(autoConnectEnabled());
+        auto.setPadding(0, Ui.dp(this, 8), 0, 0);
+        auto.setOnCheckedChangeListener((sw, on) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("autoConnect", on).apply();
+            log("Auto-connect " + (on ? "on" : "off"));
+            RemoteLog.i("settings", "autoConnect=" + on);
+            if (on) { userDisconnected = false; autoFails = 0; autoNextMs = 0; }
+        });
+        boardCard.addView(auto);
         left.addView(boardCard, Ui.margins(this, 0, 0, 0, 10));
 
         LinearLayout fwCard = Ui.card(this);

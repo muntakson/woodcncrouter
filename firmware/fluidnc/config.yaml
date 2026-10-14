@@ -26,7 +26,7 @@ axes:
   shared_stepper_disable_pin: NO_PIN
   shared_stepper_reset_pin: NO_PIN
   x:
-    steps_per_mm: 81.489998
+    steps_per_mm: 84.883000
     max_rate_mm_per_min: 1000.000000
     acceleration_mm_per_sec2: 30.000000
     max_travel_mm: 300.000000
@@ -56,7 +56,7 @@ axes:
         ms3_pin: I2SO.3
         reset_pin: NO_PIN
   y:
-    steps_per_mm: 81.489998
+    steps_per_mm: 84.883000
     max_rate_mm_per_min: 1000.000000
     acceleration_mm_per_sec2: 30.000000
     max_travel_mm: 300.000000
@@ -86,7 +86,7 @@ axes:
         ms3_pin: I2SO.6
         reset_pin: NO_PIN
   z:
-    steps_per_mm: 16.299999
+    steps_per_mm: 16.977000
     max_rate_mm_per_min: 1000.000000
     acceleration_mm_per_sec2: 10.000000
     max_travel_mm: 300.000000
