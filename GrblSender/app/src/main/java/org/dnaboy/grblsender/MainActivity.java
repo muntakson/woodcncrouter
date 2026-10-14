@@ -474,7 +474,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (!manualQueue.isEmpty() || !inFlight.isEmpty()) { log("FluidNC upload: wait until the board has answered all commands"); return; }
         if (content.length == 0 || content.length > 256 * 1024) { log("FluidNC upload: file size " + content.length + " bytes is not sensible"); return; }
         final SerialLink link = port;
-        log("FluidNC upload: " + name + " (" + content.length + " bytes) via XMODEM…");
+        // FluidNC deletes the target of a failed or cancelled $Xmodem/Receive, so never receive straight into
+        // <name>: receive <name>.part, then swap it in by renames (old file kept as <name>.bak).
+        final String part = name + ".part";
+        log("FluidNC upload: " + name + " (" + content.length + " bytes) via XMODEM as " + part + "…");
         RemoteLog.i("fluidnc", "xmodem upload " + name + " " + content.length + " bytes");
         xmodem = new XmodemSender(content, new XmodemSender.Io() {
             @Override public void write(byte[] d) {
@@ -486,20 +489,43 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             @Override public void finished(boolean ok, String message) {
                 xmodem = null;
                 ui.removeCallbacks(xmodemWatchdog);
-                String m = ok ? "✔ " + name + " uploaded (" + message + "). Restart FluidNC ($Bye) to load a new config.yaml."
-                        : "✖ Upload of " + name + " failed: " + message;
-                log("FluidNC upload: " + m);
                 RemoteLog.i("fluidnc", "xmodem " + (ok ? "ok " : "failed ") + message);
-                if (fluidUploadStatus != null) fluidUploadStatus.setText(m);
                 // the receiver ends with flushinput(): it drops input until 1.5 s of silence, and any byte
                 // (our status poll) restarts that wait – stay quiet so FluidNC returns to normal
                 quietUntilMs = System.currentTimeMillis() + 2500;
-                if (after != null) ui.postDelayed(() -> after.done(ok, message), 2600);
+                if (!ok) {
+                    String m = "✖ Upload of " + name + " failed: " + message + " – the board's " + name + " is unchanged.";
+                    log("FluidNC upload: " + m);
+                    if (fluidUploadStatus != null) fluidUploadStatus.setText(m);
+                    if (after != null) ui.postDelayed(() -> after.done(false, message), 2600);
+                    return;
+                }
+                ui.postDelayed(() -> swapInFluidFile(name, part, (swapped, why) -> {
+                    String m = swapped ? "✔ " + name + " uploaded (" + message + "), previous copy kept as " + name + ".bak."
+                            + (name.equals("config.yaml") ? " Restart FluidNC ($Bye) to load it." : "")
+                            : "✖ " + name + " was received as " + part + " but could not replace " + name + ": " + why;
+                    log("FluidNC upload: " + m);
+                    if (fluidUploadStatus != null) fluidUploadStatus.setText(m);
+                    if (after != null) after.done(swapped, swapped ? message : why);
+                }), 2600);
             }
         });
-        DebugLog.cnc(">> $Xmodem/Receive=" + name);
-        writeRaw(("$Xmodem/Receive=" + name + "\n").getBytes(StandardCharsets.US_ASCII));
+        DebugLog.cnc(">> $Xmodem/Receive=" + part);
+        writeRaw(("$Xmodem/Receive=" + part + "\n").getBytes(StandardCharsets.US_ASCII));
         ui.postDelayed(xmodemWatchdog, 5000);
+    }
+
+    /** Replaces name by the uploaded part file on FluidNC's local FS: name → name.bak, part → name (old file put back on failure). */
+    private void swapInFluidFile(String name, String part, SetupPages.Done done) {
+        captureCommand("$LocalFS/Delete=" + name + ".bak", r1 ->                      // may not exist: ignore
+            captureCommand("$LocalFS/Rename=" + name + ">" + name + ".bak", r2 ->      // may not exist: ignore
+                captureCommand("$LocalFS/Rename=" + part + ">" + name, r3 -> {
+                    if (r3 != null) { done.done(true, ""); return; }
+                    if (r2 == null) { done.done(false, "rename refused (" + part + " is still on the board)"); return; }
+                    captureCommand("$LocalFS/Rename=" + name + ".bak>" + name, r4 ->
+                        done.done(false, "rename refused; " + (r4 != null ? "the old " + name + " was put back"
+                                : "the old file is " + name + ".bak – rename it back before restarting")));
+                })));
     }
 
     private void xmodemBytes(byte[] data) {
@@ -1933,11 +1959,12 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
         if (fluid) {
             TextView how = Ui.text(this, "Flashing uses the ESP32's own serial bootloader over the board's USB (CH340K), like esptool: "
-                    + "the app resets the board into the bootloader with DTR/RTS, writes bootloader, partition table, FluidNC and "
-                    + "its file system (config.yaml + WebUI), checks every part with MD5 and restarts the board. Takes about "
-                    + "a minute. Stay connected and keep the machine idle. If the bootloader does not answer, hold BOOT while "
-                    + "tapping Flash.\nThe builds below are for the Macrobase 6-axis ESP32 card (ESP32-WROOM, 4 MB, I2S "
-                    + "step outputs) and include this router's config.yaml.", 13, 0xFFF0C050);
+                    + "the app resets the board into the bootloader with DTR/RTS, writes the parts in the package, "
+                    + "checks every part with MD5 and restarts the board. Takes about a minute. Stay connected and keep the "
+                    + "machine idle. If the bootloader does not answer, hold BOOT while tapping Flash.\nThe builds below are for "
+                    + "the Macrobase 6-axis ESP32 card (ESP32-WROOM, 4 MB, I2S step outputs). A full package (wcr1) also writes the "
+                    + "file system with this router's config.yaml; a firmware-only package (wcr2 and later) keeps the board's "
+                    + "config.yaml. The Flash dialog says which.", 13, 0xFFF0C050);
             how.setPadding(0, 0, 0, (int) (8 * dp));
             root.addView(how);
             LinearLayout upRow = Ui.row(this);
@@ -2248,6 +2275,12 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         return segs;
     }
 
+    /** True when the package writes the LittleFS partition (0x3D0000 on the Macrobase card), i.e. replaces config.yaml. */
+    private static boolean fsInPackage(List<EspFlasher.Segment> segs) {
+        for (EspFlasher.Segment sg : segs) if (sg.offset >= 0x3D0000) return true;
+        return false;
+    }
+
     private void confirmEspFlash(byte[] zip, String name, String details) {
         final List<EspFlasher.Segment> segs;
         try {
@@ -2264,8 +2297,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 .setTitle("Flash FluidNC?")
                 .setMessage(name + "\n" + details + "\n\n" + parts
                         + "\nThe board restarts into its bootloader, the parts are written and checked, then it restarts with the "
-                        + "new firmware. Its file system is replaced too (config.yaml from this package; Wi-Fi settings are "
-                        + "cleared). Keep the USB cable in and the machine idle.")
+                        + "new firmware. " + (fsInPackage(segs)
+                                ? "Its file system is replaced too (config.yaml from this package; Wi-Fi settings are cleared). "
+                                : "The file system is not touched: the board keeps its config.yaml. ")
+                        + "Keep the USB cable in and the machine idle.")
                 .setPositiveButton("Flash", (d, w) -> startEspFlash(segs, name))
                 .setNegativeButton("Cancel", null)
                 .show();

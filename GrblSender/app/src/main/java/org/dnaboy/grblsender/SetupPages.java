@@ -1018,7 +1018,7 @@ final class SetupPages {
             note.setText("Uploading config.yaml…");
             host.log("CNC setup: old config kept on the tablet as fluidnc/config-before-" + stamp + ".yaml");
             host.uploadFluid("config.yaml", c.text().getBytes(java.nio.charset.StandardCharsets.UTF_8), (done, msg) -> {
-                if (!done) { note.setText("Upload failed (" + msg + ") – FluidNC keeps its old config."); return; }
+                if (!done) { note.setText("Upload failed (" + msg + ") – config.yaml on the board is unchanged."); return; }
                 note.setText("config.yaml written – restarting FluidNC ($Bye)…");
                 host.restartFluid(() -> {
                     host.log("CNC setup: FluidNC restarted with the new config – home the machine before running a job");
