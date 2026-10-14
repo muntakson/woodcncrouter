@@ -833,6 +833,69 @@ final class SetupPages {
         };
         load[0].run();
 
+        // ---- Work offset G54
+        h("Work offset G54");
+        p("G54 is the work zero that G-code jobs use: the machine position (after homing) where X0 Y0 Z0 of the job lies. "
+                + "\"Write G54\" sends G10 L2 P1 with these values; the controller keeps them through power-off. "
+                + "The Zero XY / Zero Z buttons on the Control page overwrite G54 with the current position.");
+        EditText[] g54 = {
+                field(row(), "G54 X (mm, machine)", "cnc_g54_x", "500"),
+                field(row(), "G54 Y (mm, machine)", "cnc_g54_y", "0"),
+                field(row(), "G54 Z (mm, machine)", "cnc_g54_z", "0")};
+        TextWatcher gw = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int af) { }
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) {
+                SharedPreferences.Editor ed = host.prefs().edit();
+                for (EditText e : g54) ed.putString((String) e.getTag(), e.getText().toString());
+                ed.apply();
+            }
+        };
+        for (EditText e : g54) {
+            e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
+            e.addTextChangedListener(gw);
+        }
+        TextView g54Now = p("", DIM);
+        Runnable g54Show = () -> {
+            String v = host.grblSettings().get("G54");
+            g54Now.setText(v != null ? "In the controller now: G54 = " + v.replace(",", " / ") + " (X / Y / Z)"
+                    : host.connected() ? "Press \"Read G54\" to see the value in the controller." : "Connect to read G54 from the controller.");
+        };
+        LinearLayout g54Row = row();
+        Button g54Read = button("Read G54"), g54Write = button("Write G54");
+        g54Write.setTextColor(GOOD);
+        for (Button b : new Button[]{g54Read, g54Write}) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(56), 1);
+            lp.rightMargin = px(6);
+            g54Row.addView(b, lp);
+        }
+        Runnable g54Query = () -> {
+            host.send("$#");
+            g54Now.postDelayed(g54Show, 1000);
+        };
+        g54Read.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Connect to the board first"); return; }
+            g54Query.run();
+        });
+        g54Write.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Connect to the board first"); return; }
+            if (host.busy()) { toast("Stop the running job before changing G54"); return; }
+            String cmd = "G10L2P1X" + fmt(round3(num(g54[0]))) + "Y" + fmt(round3(num(g54[1]))) + "Z" + fmt(round3(num(g54[2])));
+            new android.app.AlertDialog.Builder(a)
+                    .setTitle("Write G54?")
+                    .setMessage(cmd + "\n\nJobs then run from this work zero. Check it before the next job: the tool goes to "
+                            + "machine X " + g54[0].getText() + " Y " + g54[1].getText() + " Z " + g54[2].getText() + " at G0 X0 Y0 Z0.")
+                    .setPositiveButton("Write", (dlg, which) -> {
+                        host.send(cmd);
+                        host.log("CNC setup: G54 written (" + cmd + ")");
+                        g54Query.run();
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        g54Show.run();
+        if (!fluid && host.connected() && !host.busy()) g54Query.run();   // FluidNC: $CD is being read now
+
         h("Recommended settings");
         table(new String[][]{
                 {"Setting", "Value", "Why"},

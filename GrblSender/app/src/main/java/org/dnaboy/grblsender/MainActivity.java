@@ -861,6 +861,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             return;
         }
         boolean reply = line.equals("ok") || line.startsWith("error:");
+        if (line.startsWith("[G54:")) grblSettings.put("G54", line.substring(5, line.length() - 1));   // $# report, for CNC setup
         if (captureBuf != null && !reply && !line.startsWith("[") && !line.startsWith("Grbl ")) { captureBuf.add(line); return; }
         if (reply) {
             Sent s = inFlight.poll();
