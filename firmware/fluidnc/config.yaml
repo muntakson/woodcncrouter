@@ -91,7 +91,7 @@ axes:
         ms3_pin: I2SO.6
         reset_pin: NO_PIN
   Z:
-    steps_per_mm: 1600.000000
+    steps_per_mm: 320.000000
     max_rate_mm_per_min: 500.000000
     acceleration_mm_per_sec2: 10.000000
     max_travel_mm: 300.000000

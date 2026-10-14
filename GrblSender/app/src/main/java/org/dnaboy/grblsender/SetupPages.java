@@ -518,12 +518,12 @@ final class SetupPages {
                 {"Part", "This router"},
                 {"Bed", "1325 × 2500 mm (X = 2500 long side, Y = 1325)"},
                 {"X / Y drive", "NEMA34 → 1:5 belt reduction → pinion → rack (4 mm pitch)"},
-                {"Z drive", "NEMA34 → 1:5 belt reduction → ball screw (5 mm lead)"},
+                {"Z drive", "NEMA34 → direct (no reduction) → ball screw (5 mm lead)"},
                 {"Stepper drivers", "MA860H, microstepping set below (DIP switches SW5–SW8)"},
                 {"Spindle", "4 kW, ER32 collet, max 24000 RPM, on/off by M3 / M5 via MK300"},
         });
 
-        image(R.drawable.art_cnc_drivetrain, "Illustration (AI-generated): X/Y with the 1:5 belt. Z (not drawn right): 1:5 belt to a 5 mm-lead screw.");
+        image(R.drawable.art_cnc_drivetrain, "Illustration (AI-generated): X/Y with the 1:5 belt. Z (not drawn right): motor direct on a 5 mm-lead screw.");
 
         h("Microstepping (MA860H)");
         p("Set the same SW5–SW8 positions on all three drivers (power off), then pick the setting here. Apply scales the "
@@ -544,11 +544,12 @@ final class SetupPages {
         p("X/Y: steps/mm = pulses/rev × reduction ÷ (pinion teeth × rack pitch). Z: steps/mm = pulses/rev × reduction ÷ screw lead.\n"
                 + "Rack pitch: a rack sold as \"4 mm\" is usually module 1.25 = π × 1.25 = 3.927 mm (the default, which gives "
                 + "84.88 with the 24T pinion at 1600 pulses/rev). Enter 4.0 only for a true 4 mm circular pitch (83.33). "
-                + "Z: 1:5 belt to a 5 mm-lead screw = 1600 steps/mm, 1 mm per motor rev, so Z G0 tops out near 500–600 mm/min.");
+                + "Z: motor direct on a 5 mm-lead screw (no belt reduction, measured 2026-10-14) = 320 steps/mm, 5 mm per motor rev.");
         EditText red = field(row(), "X/Y reduction (1:n)", "cnc_red", "5");
         EditText teeth = field(row(), "X/Y pinion teeth", "cnc_teeth", "24");
         EditText pitch = field(row(), "X/Y rack pitch (mm)", "cnc_rack_pitch", "3.927");
-        EditText zRed = field(row(), "Z reduction (1:n)", "cnc_zred", "5");
+        // new key: tablets saved cnc_zred = 5 while Z was thought to have a 1:5 belt
+        EditText zRed = field(row(), "Z reduction (1:n)", "cnc_zred_direct", "1");
         EditText zLead = field(row(), "Z screw lead (mm/rev)", "cnc_zlead", "5");
         TextView result = p("", GOOD);
         result.setTextSize(18);
