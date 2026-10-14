@@ -340,7 +340,7 @@ final class SetupPages {
         });
         p("The stock config.yaml has steps_per_mm 800 and 5000 mm/min on every axis, made for StepStick modules. "
                 + "Set this router's values before the first move (CNC setup page, or the console): "
-                + "$/axes/x/steps_per_mm=84.88, $/axes/y/steps_per_mm=84.88, $/axes/z/steps_per_mm=16.98, then $CD=config.yaml "
+                + "$/axes/x/steps_per_mm=84.88, $/axes/y/steps_per_mm=84.88, $/axes/z/steps_per_mm=1600, $/axes/z/max_rate_mm_per_min=500, then $CD=config.yaml "
                 + "to save. If an axis runs the wrong way, add :low to its direction_pin in config.yaml.", WARN);
         p("Measure the STEP terminal voltage before wiring the MA860H: if it is 3.3 V the opto current is low; "
                 + "use a 5 V buffer (74HCT245) if a motor misses steps.");
@@ -441,13 +441,19 @@ final class SetupPages {
         return (int) (Math.min(motor, ctrl) / 100) * 100;
     }
 
+    /** Suggested G0: DEFAULT_G0, or the axis max when that is lower (Z on its 1 mm/rev screw). */
+    private int defaultRate(double stepsPerMm, int pulsesPerRev) {
+        int max = maxRate(stepsPerMm, pulsesPerRev);
+        return max > 0 ? Math.min(DEFAULT_G0, max) : DEFAULT_G0;
+    }
+
     private String rateTip(double stepsPerMm, int pulsesPerRev) {
         if (stepsPerMm <= 0) return "Default " + DEFAULT_G0 + " mm/min";
         double mmRev = pulsesPerRev / stepsPerMm;
         int motor = (int) (MOTOR_MAX_RPM * mmRev), ctrl = (int) (controllerHz() * 60.0 / stepsPerMm);
         return String.format(Locale.US, "Default %,d · max ≈ %,d mm/min (motor %d rpm × %.1f mm/rev = %,d; controller %d kHz = %,d). "
                         + "Raise in steps (2000, 3000, 5000) and jog the full length after each.",
-                DEFAULT_G0, maxRate(stepsPerMm, pulsesPerRev), MOTOR_MAX_RPM, mmRev, motor, controllerHz() / 1000, ctrl);
+                defaultRate(stepsPerMm, pulsesPerRev), maxRate(stepsPerMm, pulsesPerRev), MOTOR_MAX_RPM, mmRev, motor, controllerHz() / 1000, ctrl);
     }
 
     /** Spinner with light text on the page background. */
@@ -510,12 +516,12 @@ final class SetupPages {
                 {"Part", "This router"},
                 {"Bed", "1325 × 2500 mm (X = 2500 long side, Y = 1325)"},
                 {"X / Y drive", "NEMA34 → 1:5 belt reduction → pinion → rack (4 mm pitch)"},
-                {"Z drive", "NEMA34 → pinion → rack, no reduction"},
+                {"Z drive", "NEMA34 → 1:5 belt reduction → ball screw (5 mm lead)"},
                 {"Stepper drivers", "MA860H, microstepping set below (DIP switches SW5–SW8)"},
                 {"Spindle", "4 kW, ER32 collet, max 24000 RPM, on/off by M3 / M5 via MK300"},
         });
 
-        image(R.drawable.art_cnc_drivetrain, "Illustration (AI-generated): X/Y with the 1:5 belt, Z direct.");
+        image(R.drawable.art_cnc_drivetrain, "Illustration (AI-generated): X/Y with the 1:5 belt. Z (not drawn right): 1:5 belt to a 5 mm-lead screw.");
 
         h("Microstepping (MA860H)");
         p("Set the same SW5–SW8 positions on all three drivers (power off), then pick the setting here. Apply scales the "
@@ -533,14 +539,15 @@ final class SetupPages {
         TextView microNote = p("", DIM);
 
         h("Steps per mm");
-        p("steps/mm = pulses/rev × reduction ÷ (pinion teeth × rack pitch). Count the pinion teeth and enter them.\n"
+        p("X/Y: steps/mm = pulses/rev × reduction ÷ (pinion teeth × rack pitch). Z: steps/mm = pulses/rev × reduction ÷ screw lead.\n"
                 + "Rack pitch: a rack sold as \"4 mm\" is usually module 1.25 = π × 1.25 = 3.927 mm (the default, which gives "
-                + "the 84.88 / 16.98 with the 24T pinion at 1600 pulses/rev). Enter 4.0 only for a true 4 mm circular pitch (83.33 / 16.67).");
+                + "84.88 with the 24T pinion at 1600 pulses/rev). Enter 4.0 only for a true 4 mm circular pitch (83.33). "
+                + "Z: 1:5 belt to a 5 mm-lead screw = 1600 steps/mm, 1 mm per motor rev, so Z G0 tops out near 500–600 mm/min.");
         EditText red = field(row(), "X/Y reduction (1:n)", "cnc_red", "5");
         EditText teeth = field(row(), "X/Y pinion teeth", "cnc_teeth", "24");
         EditText pitch = field(row(), "X/Y rack pitch (mm)", "cnc_rack_pitch", "3.927");
-        EditText zTeeth = field(row(), "Z pinion teeth", "cnc_zteeth", "24");
-        EditText zPitch = field(row(), "Z rack pitch (mm)", "cnc_zrack_pitch", "3.927");
+        EditText zRed = field(row(), "Z reduction (1:n)", "cnc_zred", "5");
+        EditText zLead = field(row(), "Z screw lead (mm/rev)", "cnc_zlead", "5");
         TextView result = p("", GOOD);
         result.setTextSize(18);
         result.setTypeface(null, Typeface.BOLD);
@@ -680,11 +687,11 @@ final class SetupPages {
         Runnable calc = () -> {
             int pulses = MA860H_PULSES[micro.getSelectedItemPosition()];
             double xy = stepsPerMm(pulses, num(red), num(teeth), num(pitch));
-            double z = stepsPerMm(pulses, 1, num(zTeeth), num(zPitch));
+            double z = stepsPerMm(pulses, num(zRed), 1, num(zLead));
             newSteps[0] = newSteps[1] = xy;
             newSteps[2] = z;
             double mmRevXY = num(teeth) * num(pitch) / Math.max(1e-9, num(red));
-            double mmRevZ = num(zTeeth) * num(zPitch);
+            double mmRevZ = num(zLead) / Math.max(1e-9, num(zRed));
             microNote.setText(String.format(Locale.US, "%,d pulses/rev: %s on every driver. Resolution X/Y %.4f mm, Z %.4f mm per pulse.",
                     pulses, ma860hSwitches(pulses), xy > 0 ? 1 / xy : 0, z > 0 ? 1 / z : 0));
             result.setText(String.format(Locale.US, "X / Y: %.1f steps/mm  ($100 = $101 = %.3f)\nZ: %.1f steps/mm  ($102 = %.3f)",
@@ -706,10 +713,10 @@ final class SetupPages {
                 String tip = AX[i] + " G0: " + rateTip(ts, pulses);
                 rows[i].tip.setText(tip);
                 if (android.os.Build.VERSION.SDK_INT >= 26) rows[i].rate.setTooltipText(tip);
-                rows[i].rate.setHint(String.valueOf(DEFAULT_G0));
+                rows[i].rate.setHint(String.valueOf(defaultRate(ts, pulses)));
             }
             SharedPreferences.Editor ed = host.prefs().edit();
-            for (EditText e : new EditText[]{red, teeth, pitch, zTeeth, zPitch}) ed.putString((String) e.getTag(), e.getText().toString());
+            for (EditText e : new EditText[]{red, teeth, pitch, zRed, zLead}) ed.putString((String) e.getTag(), e.getText().toString());
             ed.apply();
         };
         TextWatcher w = new TextWatcher() {
@@ -717,7 +724,7 @@ final class SetupPages {
             @Override public void onTextChanged(CharSequence s, int st, int b, int c) { }
             @Override public void afterTextChanged(Editable s) { calc.run(); }
         };
-        for (EditText e : new EditText[]{red, teeth, pitch, zTeeth, zPitch}) e.addTextChangedListener(w);
+        for (EditText e : new EditText[]{red, teeth, pitch, zRed, zLead}) e.addTextChangedListener(w);
         writeComputed.setOnCheckedChangeListener((cb, on) -> calc.run());
         micro.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int pos, long id) { calc.run(); }
@@ -826,7 +833,7 @@ final class SetupPages {
         h("Recommended settings");
         table(new String[][]{
                 {"Setting", "Value", "Why"},
-                {"G0 speed (max rate)", "1000 → 3000…", "Start at 1000 mm/min, raise in steps once motion is reliable; see the max per axis above"},
+                {"G0 speed (max rate)", "X/Y 1000 → 3000…, Z 500", "Start X/Y at 1000 mm/min, raise in steps once motion is reliable; Z (1 mm per motor rev) tops out near 500–600; see the max per axis above"},
                 {"Acceleration $120 / $121 / $122", "30 / 30 / 10", "mm/s²; heavy gantry, raise slowly (50, 80)"},
                 {"Travel", "2500 / 1325", "Bed size (measure the real travel, it is a little shorter)"},
                 {"$30 / $31", "24000 / 0", "Spindle max / min RPM (S24000 = full; speed itself is set on the MK300)"},

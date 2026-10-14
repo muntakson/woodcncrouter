@@ -425,8 +425,8 @@ $6=0         probe: plate to GND
 $30=20000    max spindle rpm
 $31=0
 $32=0        laser mode off
-$100=84.88  $101=84.88  $102=16.98      steps/mm (24T pinion, module 1.25 rack; confirm with a 500 mm jog)
-$110=1000   $111=1000   $112=1000       mm/min
+$100=84.88  $101=84.88  $102=1600       steps/mm (X/Y: 24T pinion, module 1.25 rack; Z: 1:5 belt, 5 mm screw)
+$110=1000   $111=1000   $112=500        mm/min (Z: 1 mm per motor rev)
 $120=30     $121=30     $122=10         mm/s²
 ```
 
