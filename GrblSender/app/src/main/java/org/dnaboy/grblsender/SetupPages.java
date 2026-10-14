@@ -880,16 +880,23 @@ final class SetupPages {
         g54Write.setOnClickListener(v -> {
             if (!host.connected()) { toast("Connect to the board first"); return; }
             if (host.busy()) { toast("Stop the running job before changing G54"); return; }
+            if (host.machineStatus().startsWith("State: Alarm")) { toast("Grbl is in ALARM – unlock ($X) or home first"); return; }
             String cmd = "G10L2P1X" + fmt(round3(num(g54[0]))) + "Y" + fmt(round3(num(g54[1]))) + "Z" + fmt(round3(num(g54[2])));
             new android.app.AlertDialog.Builder(a)
                     .setTitle("Write G54?")
                     .setMessage(cmd + "\n\nJobs then run from this work zero. Check it before the next job: the tool goes to "
                             + "machine X " + g54[0].getText() + " Y " + g54[1].getText() + " Z " + g54[2].getText() + " at G0 X0 Y0 Z0.")
-                    .setPositiveButton("Write", (dlg, which) -> {
-                        host.send(cmd);
-                        host.log("CNC setup: G54 written (" + cmd + ")");
+                    .setPositiveButton("Write", (dlg, which) -> host.capture(cmd, lines -> g54Now.post(() -> {
+                        // G10 is refused in ALARM (error:9), so only report success on its ok
+                        if (lines == null) {
+                            host.log("CNC setup: G54 NOT written (" + cmd + ") – the controller refused it or was busy");
+                            toast("G54 not written – unlock ($X) or home first, then write again");
+                        } else {
+                            host.log("CNC setup: G54 written (" + cmd + ")");
+                            toast("G54 written");
+                        }
                         g54Query.run();
-                    })
+                    })))
                     .setNegativeButton("Cancel", null)
                     .show();
         });

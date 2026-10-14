@@ -462,6 +462,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     /** Rapids to the G54 origin (X0 Y0 Z0). Below Z0 it lifts to Z0 first, otherwise it moves X/Y before lowering. */
     private void goG54() {
         if (machineState.startsWith("Alarm")) { log("Grbl is in ALARM – unlock ($X) or home first"); return; }
+        String g54 = grblSettings.get("G54");
+        log("Go to G54 origin" + (g54 != null ? " (G54 = " + g54 + ")" : ""));
         queueCommand("G54");
         if (wposKnown && wpos[2] < 0) {
             queueCommand("G90G0Z0");
