@@ -102,7 +102,7 @@ axes:
       allow_single_axis: true
       positive_direction: true
       mpos_mm: 0.000000
-      feed_mm_per_min: 100.000000
+      feed_mm_per_min: 300.000000
       seek_mm_per_min: 800.000000
       settle_ms: 500
       seek_scaler: 1.100000
