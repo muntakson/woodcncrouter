@@ -119,6 +119,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private String machineState = "";
     /** Input pins Grbl reports as active ("Pn:" field: X Y Z A home sensors, P probe, D door, H hold, R reset, S start). */
     private String pinState = "";
+    /** Spindle from the status report: "" off, "S" on CW (M3), "C" on CCW (M4) – the "A:" field, sent with "Ov:". */
+    private String spindleDir = "";
+    /** Spindle speed (S) from the "FS:" field, -1 until a report carries it. */
+    private int spindleSpeed = -1;
     /** Grbl motion settings ($11, $12, $110-112, $120-122) for run-time estimates; read from $$ on connect. */
     private final TimeEstimator.Limits limits = new TimeEstimator.Limits();
     /** Last $$ report ("$100" -> "81.490"), shown on the CNC setup page. */
@@ -770,6 +774,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         closePort();
         machineState = "";
         pinState = "";
+        spindleDir = "";
+        spindleSpeed = -1;
         showHomeSensors(null);
         afterBanner = null;
         if (captureBuf != null) finishCapture(null);
@@ -1088,13 +1094,22 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         boolean haveWpos = false;
         float[] w = new float[4];
         String pins = "";                      // Grbl leaves Pn: out when no input is active
+        boolean haveOv = false;
+        String acc = "";                       // A: is left out when no accessory is on, but only reports with Ov: tell
         for (int i = 1; i < fields.length; i++) {
             String f = fields[i];
             if (f.startsWith("MPos:")) statusAxes = parseXYZ(f.substring(5), mpos);
             else if (f.startsWith("WPos:")) { statusAxes = parseXYZ(f.substring(5), w); haveWpos = true; }
             else if (f.startsWith("WCO:")) parseXYZ(f.substring(4), wco);
             else if (f.startsWith("Pn:")) pins = f.substring(3);
+            else if (f.startsWith("Ov:")) haveOv = true;
+            else if (f.startsWith("A:")) acc = f.substring(2);
+            else if (f.startsWith("FS:")) {
+                String[] fs = f.substring(3).split(",");
+                if (fs.length > 1) try { spindleSpeed = Math.round(Float.parseFloat(fs[1])); } catch (NumberFormatException ignored) { }
+            }
         }
+        if (haveOv || !acc.isEmpty()) spindleDir = acc.contains("S") ? "S" : acc.contains("C") ? "C" : "";
         pinState = pins;
         if (haveWpos) {
             for (int i = 0; i < 4; i++) mpos[i] = w[i] + wco[i];
@@ -2827,6 +2842,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     @Override public float workPos(int axis) { return wpos[axis]; }
                     @Override public int axes() { return statusAxes; }
                     @Override public String pins() { return pinState; }
+                    @Override public String spindleDir() { return spindleDir; }
+                    @Override public int spindleSpeed() { return spindleSpeed; }
                     @Override public boolean proMini() { return BOARD_PROMINI.equals(board()); }
                     @Override public boolean fluidnc() { return boardIsFluid(); }
                     @Override public boolean fluidM150() { return boardIsFluid() && fwVersion != null && fwVersion.contains("-wcr"); }

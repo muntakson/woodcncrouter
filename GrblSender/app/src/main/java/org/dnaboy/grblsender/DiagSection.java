@@ -33,6 +33,8 @@ import java.util.Map;
  *  - Home sensors: live state of the X / Y / Z home sensor inputs (Grbl and FluidNC call them limit pins) from
  *    the "Pn:" field of the status report. Grbl applies $5 first, so a letter there means "sensor triggered";
  *    it reports the pins whether or not homing ($22) or hard limits ($21) are on.
+ *  - Spindle: one button toggles the spindle (M3 S<max> / M5) and a lamp shows its state from the status report
+ *    ("A:S" = on CW, "FS:" = speed). On the FluidNC card M3 switches the "spindle" terminal (enable, gpio.12) on.
  */
 final class DiagSection {
 
@@ -46,6 +48,10 @@ final class DiagSection {
         int axes();
         /** Active input pins from the last status report ("Pn:" field), e.g. "XZ"; empty when none. */
         String pins();
+        /** Spindle from the status report: "" off, "S" on CW (M3), "C" on CCW (M4). */
+        String spindleDir();
+        /** Spindle speed (S) from the status report, -1 when not known. */
+        int spindleSpeed();
         /** True for the Arduino Pro Mini board (pins D2… instead of PA0…). */
         boolean proMini();
         /** True for the FluidNC ESP32 board: no M150, its step pins sit behind I2S shift registers. */
@@ -86,7 +92,10 @@ final class DiagSection {
     private final TextView[] homeLamp = new TextView[3];
     private TextView homeOther, homeInfo;
     private String homeShown;
-    private static final int TABS = 3;
+    private TextView spinLamp, spinInfo;
+    private Button spinBtn;
+    private String spinShown;
+    private static final int TABS = 4;
     private final Button[] tabBtn = new Button[TABS];
     private final View[] tabPage = new View[TABS];
     /** Tab shown when the page is opened again. */
@@ -103,7 +112,7 @@ final class DiagSection {
         root.addView(Ui.heading(a, "Diagnosis", "Check the X / Y / Z / A step (pulse) and direction outputs with a scope or a logic probe"));
 
         LinearLayout tabs = Ui.row(a);
-        String[] tabNames = {"Pulse / Dir", "Axis test", "Home sensors"};
+        String[] tabNames = {"Pulse / Dir", "Axis test", "Home sensors", "Spindle"};
         for (int i = 0; i < TABS; i++) {
             final int t = i;
             tabBtn[i] = Ui.button(a, tabNames[i], 0);
@@ -118,7 +127,7 @@ final class DiagSection {
         root.addView(status);
         FrameLayout pages = new FrameLayout(a);
         root.addView(pages, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
-        LinearLayout pulsePage = page(pages, 0), testPage = page(pages, 1), homePage = page(pages, 2);
+        LinearLayout pulsePage = page(pages, 0), testPage = page(pages, 1), homePage = page(pages, 2), spinPage = page(pages, 3);
 
         LinearLayout card = Ui.card(a);
         for (int i = 0; i < 4; i++) {
@@ -200,6 +209,21 @@ final class DiagSection {
         homePage.addView(hcard, Ui.margins(a, 0, 0, 0, 8));
         homeShown = null;
 
+        LinearLayout scard = Ui.card(a);
+        spinLamp = Ui.text(a, "", 22, Ui.MUTED);
+        spinLamp.setGravity(Gravity.CENTER);
+        spinLamp.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        scard.addView(spinLamp, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Ui.dp(a, 110)));
+        spinBtn = Ui.button(a, "Spindle ON", 0);
+        spinBtn.setOnClickListener(v -> toggleSpindle());
+        scard.addView(spinBtn, Ui.margins(a, 0, 10, 0, 0));
+        spinBtn.getLayoutParams().height = Ui.dp(a, 64);
+        spinInfo = Ui.text(a, "", 13, Ui.MUTED);
+        spinInfo.setPadding(0, Ui.dp(a, 12), 0, 0);
+        scard.addView(spinInfo);
+        spinPage.addView(scard, Ui.margins(a, 0, 0, 0, 8));
+        spinShown = null;
+
         ui.post(posWatch);
         showTab(lastTab);
 
@@ -241,7 +265,8 @@ final class DiagSection {
         java.util.Arrays.fill(tabBtn, null);
         java.util.Arrays.fill(tabPage, null);
         java.util.Arrays.fill(homeLamp, null);
-        testPos = testState = homeOther = homeInfo = null;
+        testPos = testState = homeOther = homeInfo = spinLamp = spinInfo = null;
+        spinBtn = null;
         info = status = null;
     }
 
@@ -337,6 +362,7 @@ final class DiagSection {
         @Override public void run() {
             if (testPos == null) return;
             showHome();
+            showSpindle();
             if (!host.connected()) testPos.setText("X —  Y —  Z —");
             else {
                 StringBuilder b = new StringBuilder();
@@ -445,6 +471,71 @@ final class DiagSection {
                 + "(home sensor input invert) or check the wiring.\n"
                 + "$5 = " + (inv != null ? inv : "?") + ", " + state
                 + (inv == null && host.connected() ? " (send $$ to read them)" : "");
+    }
+
+    // ---------------------------------------------------------------- spindle
+
+    /** S word for M3: the top of the speed range ($30), so the enable output and full PWM are on. */
+    private int spindleMax() {
+        int max = intSetting("$30");
+        return max > 0 ? max : 1000;           // FluidNC config.yaml: speed_map 0=0% 1000=100%
+    }
+
+    private void toggleSpindle() {
+        if (!host.connected()) { say("Not connected to the controller"); return; }
+        if (host.busy()) { say("A program is running – the program controls the spindle"); return; }
+        if (!host.spindleDir().isEmpty()) {
+            host.send("M5");
+            host.log("Diagnosis: spindle OFF (M5)");
+            say("");
+            return;
+        }
+        String st = host.machineState();
+        if (st.startsWith("Alarm")) { say("Grbl is in ALARM – unlock ($X) first"); return; }
+        if (!st.isEmpty() && !st.equals("Idle")) { say("Grbl is " + st + " – wait until it is Idle"); return; }
+        String cmd = "M3S" + spindleMax();
+        new android.app.AlertDialog.Builder(a)
+                .setTitle("Start the spindle?")
+                .setMessage(cmd + "\n\nThe bit will spin. Keep hands and loose things away from it, and make sure the "
+                        + "bit is clear of the work and the clamps.")
+                .setPositiveButton("Start", (d, w) -> {
+                    host.send(cmd);
+                    host.log("Diagnosis: spindle ON (" + cmd + ")");
+                    say("");
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showSpindle() {
+        if (spinLamp == null) return;
+        boolean conn = host.connected();
+        String dir = conn ? host.spindleDir() : "";
+        int speed = host.spindleSpeed();
+        String key = conn + "|" + dir + "|" + speed;
+        if (key.equals(spinShown)) return;
+        spinShown = key;
+        boolean on = !dir.isEmpty();
+        int color = !conn ? Ui.MUTED : on ? Ui.OK : Ui.TEXT;
+        spinLamp.setText("Spindle\n" + (!conn ? "—" : on ? "ON " + (dir.equals("C") ? "CCW (M4)" : "CW (M3)")
+                + (speed >= 0 ? "   S" + speed : "") : "OFF"));
+        spinLamp.setTextColor(color);
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setCornerRadius(Ui.dp(a, 8));
+        bg.setColor(on ? 0x333DDC84 : Ui.PANEL2);
+        bg.setStroke(Ui.dp(a, 2), color);
+        spinLamp.setBackground(bg);
+        spinBtn.setText(on ? "Spindle OFF (M5)" : "Spindle ON (M3 S" + spindleMax() + ")");
+        spinBtn.setBackgroundResource(on ? R.drawable.btn_stop : R.drawable.btn_tech);
+        spinBtn.setTextColor(on ? Ui.ERR : Ui.TEXT);
+        String term = host.fluidnc()
+                ? "FluidNC card: M3 switches the \"spindle\" terminal on (spindle enable, gpio.12) and sets the \"pwm out\" "
+                + "terminal (gpio.27, 5 kHz) to the S value; M5 switches both off. Measure the \"spindle\" terminal against "
+                + "its GND while toggling before you wire the inverter's run input to it.\n"
+                : host.proMini() ? "Pro Mini: M3 drives D13 high (spindle enable) and PWM on D11; M5 switches them off.\n"
+                : "Blue Pill: M3 drives the spindle enable (PB13) and PWM; M5 switches them off.\n";
+        spinInfo.setText(term + "State comes from the controller's status report (A:S = on), so it also shows a spindle "
+                + "started by a program or the console. The button is blocked while a program runs.");
     }
 
     // ---------------------------------------------------------------- X / Y / Z / A dir
