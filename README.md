@@ -92,6 +92,6 @@ Origin: X0 Y0 = lower-left corner of the sheet stack, Z0 = top of the stack.
 
 ## Machine (X/Y: NEMA34, 18T→90T belt, rack & 24T pinion; Z: direct → 5 mm-lead screw; drivers 1600 p/rev)
 
-Target settings (2026-10-14): `$100=$101=84.88` (24T pinion), `$102=320` (motor direct on a 5 mm-lead screw; the 1:5 Z belt assumed earlier does not exist, measured 2026-10-14), `$112=500`. The boards were set on 2026-10-03 to 81.49 / 16.30 for an assumed 25T pinion on all axes; rewrite them. Other settings: `$110=$111=1000`,
+Target settings (2026-10-14): `$100=$101=84.88` (24T pinion), `$102=320` (motor direct on a 5 mm-lead screw; the 1:5 Z belt assumed earlier does not exist, measured 2026-10-14), `$112=1000`. The boards were set on 2026-10-03 to 81.49 / 16.30 for an assumed 25T pinion on all axes; rewrite them. Other settings: `$110=$111=1000`,
 `$120=$121=30`, `$122=10`, `$3=$4=$5=0`. Confirm the steps/mm with measured jogs. Recommended: `$1=255`, so the
 Z axis holds its position when idle.
