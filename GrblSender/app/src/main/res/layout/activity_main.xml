@@ -131,6 +131,21 @@
                         <Button android:id="@+id/btnHold" style="@style/Tb" android:background="@drawable/btn_hold" android:text="❚❚ Hold" android:textColor="@color/warn" />
                         <Button android:id="@+id/btnResume" style="@style/Tb" android:text="Resume" />
                         <Button android:id="@+id/btnStop" style="@style/Tb" android:background="@drawable/btn_stop" android:text="■ Stop" android:textColor="@color/err" />
+                        <!-- feed override (realtime 0x90 reset, 0x91 / 0x92 ±10 %) -->
+                        <View android:layout_width="1dp" android:layout_height="28dp"
+                            android:layout_marginStart="6dp" android:layout_marginEnd="6dp" android:background="#3A4048" />
+                        <TextView
+                            android:id="@+id/txtFeedOv"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:paddingEnd="4dp"
+                            android:singleLine="true"
+                            android:text="Feed –"
+                            android:textColor="#8B939C"
+                            android:textSize="14sp" />
+                        <Button android:id="@+id/ov50" style="@style/Tb" android:text="0.5×" />
+                        <Button android:id="@+id/ov100" style="@style/Tb" android:text="1×" />
+                        <Button android:id="@+id/ov200" style="@style/Tb" android:text="2×" />
                     </LinearLayout>
                 </HorizontalScrollView>
             </LinearLayout>
@@ -160,21 +175,6 @@
                     android:text="Not loaded"
                     android:textColor="#8B939C"
                     android:textSize="12sp" />
-
-                <!-- feed override (realtime 0x90 reset, 0x91 / 0x92 ±10 %) -->
-                <TextView
-                    android:id="@+id/txtFeedOv"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:paddingStart="12dp"
-                    android:paddingEnd="4dp"
-                    android:singleLine="true"
-                    android:text="Feed –"
-                    android:textColor="#8B939C"
-                    android:textSize="12sp" />
-                <Button android:id="@+id/ov50" style="@style/Ov" android:text="0.5×" />
-                <Button android:id="@+id/ov100" style="@style/Ov" android:text="1×" />
-                <Button android:id="@+id/ov200" style="@style/Ov" android:text="2×" />
             </LinearLayout>
 
             <!-- Body -->

@@ -129,6 +129,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     /** Grbl latches each ±10 % byte as a flag until the main loop runs, so a burst could collapse into one step. */
     private static final int OV_STEP_MS = 40;
     private int ovSeq;                         // a newer button press cancels the steps still pending
+    private int ovCheckPct = -1;               // value to verify against the first Ov: report after ovCheckAfterMs
+    private long ovCheckAfterMs;
     private Button[] ovButtons;
     private android.content.res.ColorStateList ovTextColor;
     private TextView txtFeedOv;
@@ -797,6 +799,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         spindleSpeed = -1;
         feedOv = -1;
         ovSeq++;
+        ovCheckPct = -1;
         showFeedOv();
         showHomeSensors(null);
         afterBanner = null;
@@ -1126,11 +1129,19 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         for (int k = 1; k <= steps; k++) {
             ui.postDelayed(() -> { if (seq == ovSeq) writeRaw(new byte[]{step}); }, (long) k * OV_STEP_MS);
         }
-        if (retry) ui.postDelayed(() -> {
-            if (seq != ovSeq || port == null || feedOv < 0 || feedOv == pct) return;
-            log("Feed override reads " + feedOv + " %, not " + pct + " % – sending it again");
-            setFeedOverride(pct, false);
-        }, (long) (steps + 1) * OV_STEP_MS + 800);
+        // FluidNC puts Ov: in only every few reports, so wait for one that comes after the last step
+        ovCheckPct = retry ? pct : -1;
+        ovCheckAfterMs = System.currentTimeMillis() + (long) (steps + 1) * OV_STEP_MS + 100;
+    }
+
+    /** Called with each Ov: report: resends the override once if the controller did not end up at the chosen value. */
+    private void checkFeedOv() {
+        if (ovCheckPct < 0 || System.currentTimeMillis() < ovCheckAfterMs) return;
+        int pct = ovCheckPct;
+        ovCheckPct = -1;
+        if (feedOv == pct || port == null) return;
+        log("Feed override reads " + feedOv + " %, not " + pct + " % – sending it again");
+        setFeedOverride(pct, false);
     }
 
     /** Feed override label and the lit 0.5× / 1× / 2× button. */
@@ -1173,7 +1184,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
         if (haveOv || !acc.isEmpty()) spindleDir = acc.contains("S") ? "S" : acc.contains("C") ? "C" : "";
         pinState = pins;
-        if (haveOv) showFeedOv();
+        if (haveOv) { showFeedOv(); checkFeedOv(); }
         if (haveWpos) {
             for (int i = 0; i < 4; i++) mpos[i] = w[i] + wco[i];
         } else {
