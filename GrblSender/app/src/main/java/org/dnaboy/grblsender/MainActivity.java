@@ -123,6 +123,15 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private String spindleDir = "";
     /** Spindle speed (S) from the "FS:" field, -1 until a report carries it. */
     private int spindleSpeed = -1;
+    /** Feed override % from the status report's "Ov:" field (sent every few reports), -1 until seen. */
+    private int feedOv = -1;
+    private static final int[] OV_PCT = {50, 100, 200};
+    /** Grbl latches each ±10 % byte as a flag until the main loop runs, so a burst could collapse into one step. */
+    private static final int OV_STEP_MS = 40;
+    private int ovSeq;                         // a newer button press cancels the steps still pending
+    private Button[] ovButtons;
+    private android.content.res.ColorStateList ovTextColor;
+    private TextView txtFeedOv;
     /** Grbl motion settings ($11, $12, $110-112, $120-122) for run-time estimates; read from $$ on connect. */
     private final TimeEstimator.Limits limits = new TimeEstimator.Limits();
     /** Last $$ report ("$100" -> "81.490"), shown on the CNC setup page. */
@@ -346,6 +355,16 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         findViewById(R.id.fullHold).setOnClickListener(v -> feedHold("tablet"));
         findViewById(R.id.fullResume).setOnClickListener(v -> writeRaw(new byte[]{'~'}));
         findViewById(R.id.fullStop).setOnClickListener(v -> stopJob());
+        txtFeedOv = findViewById(R.id.txtFeedOv);
+        int[] ovIds = {R.id.ov50, R.id.ov100, R.id.ov200, R.id.fullOv50, R.id.fullOv100, R.id.fullOv200};
+        ovButtons = new Button[ovIds.length];
+        for (int i = 0; i < ovIds.length; i++) {
+            final int pct = OV_PCT[i % OV_PCT.length];
+            ovButtons[i] = findViewById(ovIds[i]);
+            ovButtons[i].setOnClickListener(v -> setFeedOverride(pct, true));
+        }
+        ovTextColor = ovButtons[0].getTextColors();
+        showFeedOv();
         tabEditor.setOnClickListener(v -> showConsole(false));
         tabConsole.setOnClickListener(v -> showConsole(true));
 
@@ -776,6 +795,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         pinState = "";
         spindleDir = "";
         spindleSpeed = -1;
+        feedOv = -1;
+        ovSeq++;
+        showFeedOv();
         showHomeSensors(null);
         afterBanner = null;
         if (captureBuf != null) finishCapture(null);
@@ -871,6 +893,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             case '~': return "~ (cycle start / resume)";
             case 0x18: return "Ctrl-X (soft reset)";
             case (byte) 0x85: return "0x85 (jog cancel)";
+            case (byte) 0x90: return "0x90 (feed override 100 %)";
+            case (byte) 0x91: return "0x91 (feed override +10 %)";
+            case (byte) 0x92: return "0x92 (feed override −10 %)";
             default: return String.format(Locale.US, "0x%02X", b & 0xFF);
         }
     }
@@ -1086,6 +1111,40 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         txtHome.setText(b);
     }
 
+    /**
+     * Sets the feed override to 50, 100 or 200 % (Grbl's range is 10–200): 0x90 resets it to 100 %, then one
+     * 0x91 (+10 %) or 0x92 (−10 %) per step, spaced so Grbl sees each one. Rapids and the spindle are untouched.
+     * With {@code retry}, the value from the next "Ov:" report is checked and the sequence sent once more if it differs.
+     */
+    private void setFeedOverride(int pct, boolean retry) {
+        if (port == null) { log("Feed override: not connected"); return; }
+        int seq = ++ovSeq;
+        log("Feed override → " + pct + " %" + (retry ? "" : " (resent)"));
+        writeRaw(new byte[]{(byte) 0x90});
+        int steps = Math.abs(pct - 100) / 10;
+        byte step = pct > 100 ? (byte) 0x91 : (byte) 0x92;
+        for (int k = 1; k <= steps; k++) {
+            ui.postDelayed(() -> { if (seq == ovSeq) writeRaw(new byte[]{step}); }, (long) k * OV_STEP_MS);
+        }
+        if (retry) ui.postDelayed(() -> {
+            if (seq != ovSeq || port == null || feedOv < 0 || feedOv == pct) return;
+            log("Feed override reads " + feedOv + " %, not " + pct + " % – sending it again");
+            setFeedOverride(pct, false);
+        }, (long) (steps + 1) * OV_STEP_MS + 800);
+    }
+
+    /** Feed override label and the lit 0.5× / 1× / 2× button. */
+    private void showFeedOv() {
+        txtFeedOv.setText(feedOv < 0 ? "Feed –" : "Feed " + feedOv + " %");
+        txtFeedOv.setTextColor(feedOv < 0 || feedOv == 100 ? 0xFF8B939C : 0xFFFFC040);
+        for (int i = 0; i < ovButtons.length; i++) {
+            boolean on = feedOv == OV_PCT[i % OV_PCT.length];
+            if (on) ovButtons[i].setTextColor(getColor(R.color.accent));
+            else ovButtons[i].setTextColor(ovTextColor);
+            ovButtons[i].setTypeface(null, on ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+        }
+    }
+
     private void parseStatus(String line) {
         String body = line.substring(1, line.endsWith(">") ? line.length() - 1 : line.length());
         String[] fields = body.split("\\|");
@@ -1102,7 +1161,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             else if (f.startsWith("WPos:")) { statusAxes = parseXYZ(f.substring(5), w); haveWpos = true; }
             else if (f.startsWith("WCO:")) parseXYZ(f.substring(4), wco);
             else if (f.startsWith("Pn:")) pins = f.substring(3);
-            else if (f.startsWith("Ov:")) haveOv = true;
+            else if (f.startsWith("Ov:")) {
+                haveOv = true;
+                try { feedOv = Integer.parseInt(f.substring(3).split(",")[0].trim()); } catch (NumberFormatException ignored) { }
+            }
             else if (f.startsWith("A:")) acc = f.substring(2);
             else if (f.startsWith("FS:")) {
                 String[] fs = f.substring(3).split(",");
@@ -1111,6 +1173,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
         if (haveOv || !acc.isEmpty()) spindleDir = acc.contains("S") ? "S" : acc.contains("C") ? "C" : "";
         pinState = pins;
+        if (haveOv) showFeedOv();
         if (haveWpos) {
             for (int i = 0; i < 4; i++) mpos[i] = w[i] + wco[i];
         } else {

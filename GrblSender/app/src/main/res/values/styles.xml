@@ -22,6 +22,21 @@
         <item name="android:textSize">14sp</item>
     </style>
 
+    <!-- compact feed override button in the progress row -->
+    <style name="Ov">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">34dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:minWidth">46dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:paddingStart">6dp</item>
+        <item name="android:paddingEnd">6dp</item>
+        <item name="android:paddingTop">0dp</item>
+        <item name="android:paddingBottom">0dp</item>
+        <item name="android:layout_marginStart">3dp</item>
+        <item name="android:textSize">13sp</item>
+    </style>
+
     <style name="Tab">
         <item name="android:background">@android:color/transparent</item>
         <item name="android:layout_width">0dp</item>
