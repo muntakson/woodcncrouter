@@ -28,7 +28,8 @@ p.add_argument("--through", type=float, default=0.5, help="extra depth into the 
 p.add_argument("--step", type=float, default=4.0, help="max depth per pass mm")
 p.add_argument("--feed", type=float, default=800, help="cutting feed mm/min")
 p.add_argument("--plunge", type=float, default=500, help="plunge feed mm/min (Grbl caps it at $112)")
-p.add_argument("--peck", type=float, default=6.0, help="retract to clear chips every N mm of hole depth")
+p.add_argument("--peck", type=float, default=6.0, help="retract to clear chips every N mm of hole depth (0 = one plunge)")
+p.add_argument("--hole-depth", type=float, default=None, help="hole depth below Z0 mm (default: stock + through)")
 p.add_argument("--safe", type=float, default=5.0, help="safe Z above the stack mm")
 p.add_argument("--spindle", choices=["vfd", "manual"], default="vfd",
                help="vfd: M3/M5 switch the MK300 via Grbl's spindle-enable pin (D13); manual: M0 pauses to switch by hand")
@@ -42,6 +43,8 @@ R = args.tool / 2
 DEPTH = args.stock + args.through
 NPASS = math.ceil(DEPTH / args.step - 1e-9)
 STEP = DEPTH / NPASS
+HOLE_DEPTH = args.hole_depth if args.hole_depth is not None else DEPTH
+PECK = args.peck if args.peck > 0 else HOLE_DEPTH
 
 sheet, parts, problems, _ = dxf_parts.load(args.dxf)
 if problems:
@@ -206,13 +209,13 @@ def drill_hole(cx, cy):
     rapid_xy(cx, cy)
     rapid_z(1.0)
     z = 0.0
-    while z > -DEPTH + 1e-9:
-        nz = max(z - args.peck, -DEPTH)
+    while z > -HOLE_DEPTH + 1e-9:
+        nz = max(z - PECK, -HOLE_DEPTH)
         if z < 0:
             rapid_z(z + 0.5)          # back down to just above the last depth
         plunge(nz)
         z = nz
-        if z > -DEPTH + 1e-9:
+        if z > -HOLE_DEPTH + 1e-9:
             rapid_z(1.0)              # clear chips
     rapid_z(args.safe)
 
@@ -223,12 +226,14 @@ g("%")
 OPS = {"all": "holes + outside profiles", "holes": "HOLES ONLY", "profile": "OUTSIDE PROFILES ONLY (holes are in a separate file)"}[args.ops]
 g(f"(Plywood hex dome parts - {OPS} - {len(parts)} parts, {total_holes} holes, sheet {sheet[2]-sheet[0]:.0f} x {sheet[3]-sheet[1]:.0f} mm)")
 g(f"(Source: {os.path.basename(args.dxf)})")
-g(f"(T1 D={args.tool:g} flat end mill - flute length must exceed {DEPTH:.1f} mm)")
-g(f"(Stock: stack {args.stock:g} mm thick = 6 x 5 mm plywood, cut {args.through:g} mm into the spoilboard)")
+MAXD = max(DEPTH if args.ops != "holes" else 0, HOLE_DEPTH if args.ops != "profile" else 0)
+g(f"(T1 D={args.tool:g} flat end mill - flute length must exceed {MAXD:.1f} mm)")
+g(f"(Stock: stack {args.stock:g} mm thick = 6 x 5 mm plywood, cut {MAXD - args.stock:g} mm into the spoilboard)")
 if args.ops != "holes":
     g(f"(Passes: {NPASS} x {STEP:.3f} mm. Feed {args.feed:.0f}, plunge {args.plunge:.0f} mm/min. No tabs.)")
 if args.ops != "profile":
-    g(f"(Holes: peck-drilled D={args.tool:g} mm with the endmill, {args.peck:g} mm pecks at F{args.plunge:.0f})")
+    how = f"{PECK:g} mm pecks" if PECK < HOLE_DEPTH else "one plunge, no pecking"
+    g(f"(Holes: D={args.tool:g} mm with the endmill to Z-{HOLE_DEPTH:g}, {how} at F{args.plunge:.0f})")
 g("(ORIGIN: X0 Y0 = lower-left corner of the sheet stack, Z0 = TOP of the stack)")
 g("(Keep screws/clamps away from all cut paths.)")
 if args.spindle == "vfd":
