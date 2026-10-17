@@ -32,6 +32,8 @@ p.add_argument("--peck", type=float, default=6.0, help="retract to clear chips e
 p.add_argument("--safe", type=float, default=5.0, help="safe Z above the stack mm")
 p.add_argument("--spindle", choices=["vfd", "manual"], default="vfd",
                help="vfd: M3/M5 switch the MK300 via Grbl's spindle-enable pin (D13); manual: M0 pauses to switch by hand")
+p.add_argument("--ops", choices=["all", "holes", "profile"], default="all",
+               help="holes: drill only; profile: outside cuts only (two files for two tools, same X/Y zero)")
 p.add_argument("--rpm", type=float, default=20000, help="spindle speed word for M3 (keep Grbl $30 equal to it)")
 p.add_argument("--spinup", type=float, default=10.0, help="dwell after M3 so the spindle reaches speed, s")
 args = p.parse_args()
@@ -218,12 +220,15 @@ def drill_hole(cx, cy):
 
 total_holes = sum(len(p.holes) for p in parts)
 g("%")
-g(f"(Plywood hex dome parts - {len(parts)} parts, {total_holes} holes, sheet {sheet[2]-sheet[0]:.0f} x {sheet[3]-sheet[1]:.0f} mm)")
+OPS = {"all": "holes + outside profiles", "holes": "HOLES ONLY", "profile": "OUTSIDE PROFILES ONLY (holes are in a separate file)"}[args.ops]
+g(f"(Plywood hex dome parts - {OPS} - {len(parts)} parts, {total_holes} holes, sheet {sheet[2]-sheet[0]:.0f} x {sheet[3]-sheet[1]:.0f} mm)")
 g(f"(Source: {os.path.basename(args.dxf)})")
 g(f"(T1 D={args.tool:g} flat end mill - flute length must exceed {DEPTH:.1f} mm)")
 g(f"(Stock: stack {args.stock:g} mm thick = 6 x 5 mm plywood, cut {args.through:g} mm into the spoilboard)")
-g(f"(Passes: {NPASS} x {STEP:.3f} mm. Feed {args.feed:.0f}, plunge {args.plunge:.0f} mm/min. No tabs.)")
-g(f"(Holes: peck-drilled D={args.tool:g} mm with the endmill, {args.peck:g} mm pecks at F{args.plunge:.0f})")
+if args.ops != "holes":
+    g(f"(Passes: {NPASS} x {STEP:.3f} mm. Feed {args.feed:.0f}, plunge {args.plunge:.0f} mm/min. No tabs.)")
+if args.ops != "profile":
+    g(f"(Holes: peck-drilled D={args.tool:g} mm with the endmill, {args.peck:g} mm pecks at F{args.plunge:.0f})")
 g("(ORIGIN: X0 Y0 = lower-left corner of the sheet stack, Z0 = TOP of the stack)")
 g("(Keep screws/clamps away from all cut paths.)")
 if args.spindle == "vfd":
@@ -255,8 +260,10 @@ while remaining:
     while holes:
         h = min(holes, key=lambda c: math.dist(pos[:2], c[:2]))
         holes.remove(h)
-        drill_hole(h[0], h[1])
-    cut_profile(profile_path(part))
+        if args.ops != "profile":
+            drill_hole(h[0], h[1])
+    if args.ops != "holes":
+        cut_profile(profile_path(part))
     here = tuple(pos[:2])
 
 rapid_z(args.safe)
