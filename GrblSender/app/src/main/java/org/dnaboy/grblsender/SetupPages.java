@@ -63,6 +63,8 @@ final class SetupPages {
 
     private static final int BG = 0xFF1D2024, FG = 0xFFE3E6EA, DIM = 0xFF8B939C, CELL = 0xFF111316,
             HEAD = 0xFF24476E, WARN = 0xFFF0C050, GOOD = 0xFF4CD07D;
+    /** Row marks for {@link #table(String[][], int[])}: must-set (red) and important (yellow) parameters. */
+    private static final int RED = 0xFFFF5555, YEL = 0xFFFFE040;
 
     private final Activity a;
     private final Host host;
@@ -159,16 +161,20 @@ final class SetupPages {
     }
 
     /** First row is the header. */
-    private void table(String[][] rows) {
+    private void table(String[][] rows) { table(rows, null); }
+
+    /** As {@link #table(String[][])}; marks[r] (RED / YEL, 0 = none) colours row r's text and tints its cells. */
+    private void table(String[][] rows, int[] marks) {
         TableLayout tl = new TableLayout(a);
         tl.setStretchAllColumns(true);
         tl.setShrinkAllColumns(true);
         for (int r = 0; r < rows.length; r++) {
             TableRow tr = new TableRow(a);
             for (String cell : rows[r]) {
-                TextView t = text(cell, 14, r == 0 ? 0xFFFFFFFF : FG);
-                if (r == 0) t.setTypeface(null, Typeface.BOLD);
-                t.setBackgroundColor(r == 0 ? HEAD : CELL);
+                int mark = marks != null && r < marks.length ? marks[r] : 0;
+                TextView t = text(cell, 14, r == 0 ? 0xFFFFFFFF : mark != 0 ? mark : FG);
+                if (r == 0 || mark != 0) t.setTypeface(null, Typeface.BOLD);
+                t.setBackgroundColor(r == 0 ? HEAD : mark == RED ? 0xFF3A1A1C : mark == YEL ? 0xFF33301A : CELL);
                 t.setPadding(px(8), px(6), px(8), px(6));
                 TableRow.LayoutParams lp = new TableRow.LayoutParams();
                 lp.setMargins(0, 0, px(1), px(1));
@@ -177,6 +183,42 @@ final class SetupPages {
             tl.addView(tr);
         }
         body.addView(tl);
+    }
+
+    /** MK300 spindle inverter parameters (CNC setup page); same list as mk300_settings.md in the repo. */
+    private void mk300Settings() {
+        h("Spindle inverter (MK300)");
+        p("The board only switches the spindle on and off (M3 / M5 → X1–COM). The speed comes from the MK300 itself: "
+                + "Hz × 60 = RPM, so 400 Hz = 24000 RPM. Spindle stopped, PRG → group → ENTER → ▲▼ to the parameter → ENTER, "
+                + "change with ▲▼ / ◄, ENTER to save.");
+        p("Red = must be set or the spindle will not work / is unsafe. Yellow = important, check it.", DIM);
+        table(new String[][]{
+                {"Parameter", "Value", "Meaning"},
+                {"P1-04", "400.00 Hz", "Rated motor frequency. Left at 50 Hz the drive over-volts the 400 Hz spindle and its current limit holds it at about 17 Hz (slow, humming, hot)"},
+                {"P1-01", "4.0 kW", "Rated motor power (nameplate)"},
+                {"P1-02", "nameplate V (220)", "Rated motor voltage"},
+                {"P1-03", "nameplate A", "Rated motor current (about 13 A for 4 kW / 220 V)"},
+                {"P1-05", "24000 rpm", "Rated motor speed"},
+                {"P0-10", "400.00 Hz", "Maximum frequency (factory 50 Hz = 3000 RPM). Set before P1-04, P0-12, P0-08"},
+                {"P0-12", "400.00 Hz", "Upper limit frequency: caps every speed"},
+                {"P0-11", "0", "Upper limit from P0-12 (1 / 2 = unwired AI input → about 0 Hz)"},
+                {"P0-08", "400.00 Hz", "Preset frequency = spindle speed on M3 (333.3 = 20000, 300 = 18000 RPM)"},
+                {"P0-03", "0 or 1", "Speed from panel / P0-08 (2 = AI1, unwired → no speed)"},
+                {"P0-07", "0", "Main frequency source only (no X + Y mixing)"},
+                {"P0-02", "1", "Run command from the terminals (0 = panel; made the spindle run at power-on)"},
+                {"P8-18", "1", "Ignore a run signal already on at power-up or fault reset"},
+                {"P0-17", "5–8 s", "Acceleration time (G-code waits 10 s after M3; too short trips the current limit)"},
+                {"P4-38", "00001", "X1 logic. On this unit 00001 gives short X1–COM = run, open = stop (fail-safe). Trust the bare-wire test"},
+                {"P0-01", "2", "V/F control"},
+                {"P3-00", "0", "Linear V/F"},
+                {"P3-01", "0–2 %", "Torque boost, keep small (a large boost over-volts at low Hz)"},
+                {"P4-00", "1", "X1 = forward run (FWD)"},
+                {"P4-11", "0", "Two-line mode 1"},
+                {"P6-10", "0", "Decelerate to stop"},
+                {"P7-01", "1", "JOG (MF) key toggles panel ↔ terminal; the LOC/REM LED must be on for X1 to work"},
+        }, new int[]{0, RED, YEL, YEL, YEL, YEL, RED, RED, YEL, YEL, YEL, 0, RED, YEL, YEL, YEL, 0, 0, 0, 0, 0, 0, YEL});
+        p("Check while running: ►► / SHIFT cycles the display (Hz, V, A). Stuck far below the preset with the current at the "
+                + "rated value = current limit → recheck P1-04 and the other P1 values.", WARN);
     }
 
     // ---------------------------------------------------------------- Wiring
@@ -285,7 +327,8 @@ final class SetupPages {
                 {"P6-10", "0", "Decelerate to stop"},
                 {"P0-17", "≤ 8 s", "Acceleration time (G-code waits 10 s after M3)"},
                 {"P0-03 / P0-08", "panel / preset", "Speed: preset frequency (see the spindle nameplate, e.g. 400 Hz = 24000 RPM)"},
-        });
+                {"P1-04", "400 Hz", "Rated motor frequency – full MK300 list on the CNC setup page"},
+        }, new int[]{0, RED, 0, 0, YEL, 0, YEL, YEL, RED});
         p("Fail-safe: reset, alarm, USB loss and power-up all drop the enable pin, and the spindle decelerates to a stop.");
 
         h("3. Home sensors");
@@ -916,6 +959,8 @@ final class SetupPages {
         });
         p("Feed for an 8 mm 2-flute end mill in plywood: about F2000 at 20000–24000 RPM (chip load ≈ 0.05 mm/tooth). "
                 + "ER32 holds 3–20 mm shanks; use the collet that matches the tool shank.");
+
+        mk300Settings();
 
         apply.setOnClickListener(v -> {
             AxisState st = state[0];

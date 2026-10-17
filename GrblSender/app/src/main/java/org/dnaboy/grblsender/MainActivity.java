@@ -77,6 +77,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private static final int PLANNER_LOOKBACK = 24;  // lines that may sit in Grbl's planner + RX buffer
     private static final String[] BAUDS = {"38400", "115200", "57600", "9600"};
     private static final String SAMPLE_NAME = "circle_d100.nc";
+    /** Bump when assets/circle_d100.nc changes, so the copy in Documents/ is rewritten (2: G54, M3/M5, F600). */
+    private static final int SAMPLE_VERSION = 2;
     private static final String SAMPLE_DIR = "GrblSender";
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -121,6 +123,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private String pinState = "";
     /** Spindle from the status report: "" off, "S" on CW (M3), "C" on CCW (M4) – the "A:" field, sent with "Ov:". */
     private String spindleDir = "";
+    /** Current feed rate (mm/min) from the "FS:" or "F:" field, -1 until a report carries it. */
+    private int feedRate = -1;
     /** Spindle speed (S) from the "FS:" field, -1 until a report carries it. */
     private int spindleSpeed = -1;
     /** Feed override % from the status report's "Ov:" field (sent every few reports), -1 until seen. */
@@ -193,7 +197,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     // Views
     private Spinner baudSpinner;
     private Button btnConnect, btnRun, btnLoad, tabEditor, tabConsole;
-    private TextView txtState, txtPos, txtMPos, txtHome, txtFile, txtJob, txtLog;
+    private TextView txtState, txtPos, txtMPos, txtHome, txtFeed, txtFile, txtJob, txtLog;
     private ScrollView logScroll;
     private ProgressBar progress;
     private EditText cmdInput, jogFeed;
@@ -279,6 +283,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         txtPos = findViewById(R.id.txtPos);
         txtMPos = findViewById(R.id.txtMPos);
         txtHome = findViewById(R.id.txtHome);
+        txtFeed = findViewById(R.id.txtFeed);
         txtFile = findViewById(R.id.txtFile);
         txtJob = findViewById(R.id.txtJob);
         txtLog = findViewById(R.id.txtLog);
@@ -797,6 +802,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         pinState = "";
         spindleDir = "";
         spindleSpeed = -1;
+        feedRate = -1;
+        showFeed();
         feedOv = -1;
         ovSeq++;
         ovCheckPct = -1;
@@ -1156,6 +1163,12 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         }
     }
 
+    /** Current feed (actual, override included) under the DRO, in bright yellow so it stands out. */
+    private void showFeed() {
+        txtFeed.setText(feedRate < 0 ? "F – mm/min" : String.format(Locale.US, "F %d mm/min", feedRate));
+        txtFeed.setTextColor(feedRate < 0 ? 0xFF8B939C : 0xFFFFFF00);
+    }
+
     private void parseStatus(String line) {
         String body = line.substring(1, line.endsWith(">") ? line.length() - 1 : line.length());
         String[] fields = body.split("\\|");
@@ -1177,8 +1190,12 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 try { feedOv = Integer.parseInt(f.substring(3).split(",")[0].trim()); } catch (NumberFormatException ignored) { }
             }
             else if (f.startsWith("A:")) acc = f.substring(2);
+            else if (f.startsWith("F:")) {
+                try { feedRate = Math.round(Float.parseFloat(f.substring(2))); } catch (NumberFormatException ignored) { }
+            }
             else if (f.startsWith("FS:")) {
                 String[] fs = f.substring(3).split(",");
+                try { feedRate = Math.round(Float.parseFloat(fs[0])); } catch (NumberFormatException ignored) { }
                 if (fs.length > 1) try { spindleSpeed = Math.round(Float.parseFloat(fs[1])); } catch (NumberFormatException ignored) { }
             }
         }
@@ -1197,6 +1214,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         txtPos.setText(dro(w));
         txtMPos.setText(String.format(Locale.US, "MPos %.3f, %.3f, %.3f", mpos[0], mpos[1], mpos[2]));
         showHomeSensors(pins);
+        showFeed();
         txtState.setText(machineState + (streaming ? "  ▶" : ""));
         int color;
         if (machineState.startsWith("Alarm")) color = 0xFFFF5555;
@@ -1717,15 +1735,16 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void restoreDocument() {
         SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         String last = prefs.getString("lastUri", null);
+        Uri sample = null;
+        if (prefs.getInt("sampleVersion", prefs.getBoolean("sampleCreated", false) ? 1 : 0) < SAMPLE_VERSION) {
+            sample = createSampleFile();   // also rewrites an older copy in place
+            prefs.edit().putInt("sampleVersion", SAMPLE_VERSION).apply();
+        }
         if (last != null) {
             Uri uri = Uri.parse(last);
             if (loadDocument(uri, false)) return;
         }
-        if (!prefs.getBoolean("sampleCreated", false)) {
-            Uri sample = createSampleFile();
-            prefs.edit().putBoolean("sampleCreated", true).apply();
-            if (sample != null && loadDocument(sample, true)) return;
-        }
+        if (sample != null && loadDocument(sample, true)) return;
         newDocument();
     }
 

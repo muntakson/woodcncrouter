@@ -49,6 +49,9 @@ PC817 pin 3 (emitter)  ──► MK300 COM
 | **P8-18** | **1** | Startup protection: ignore a run signal already on at VFD power-up or fault reset |
 | P6-10 | 0 (default) | Decelerate to stop |
 | P0-17 | ≤ about 8 s | Acceleration time; the G-code waits 10 s after M3 (adjust `--spinup` if longer) |
+| **P1-04** | **400 Hz** | Rated motor frequency (with P0-10 / P0-12 = 400 Hz) – left at 50 Hz the spindle sticks at about 17 Hz |
+
+Full MK300 list, speed values and troubleshooting: **`mk300_settings.md`**.
 
 ## Grbl settings
 

@@ -271,6 +271,17 @@
                                 android:text="Home X –  Y –  Z –"
                                 android:textColor="@color/muted"
                                 android:textSize="10sp" />
+
+                            <TextView
+                                android:id="@+id/txtFeed"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:fontFamily="monospace"
+                                android:singleLine="true"
+                                android:text="F – mm/min"
+                                android:textColor="@color/muted"
+                                android:textSize="14sp" />
                         </LinearLayout>
 
                         <LinearLayout
