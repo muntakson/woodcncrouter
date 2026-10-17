@@ -206,8 +206,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private GCodeViewer viewer;
     /** Text of a large document shown read-only in {@link #viewer}; null when the editor holds the document. */
     private String largeText;
-    private static final int LARGE_LINES = 4000;
-    private static final int LARGE_CHARS = 150_000;
+    private static final int LARGE_LINES = 1500;   // the U320 ROM makes highlighting a 3500-line file in the editor take minutes (ANR)
+    private static final int LARGE_CHARS = 60_000;
     private ToolpathView preview;
     private TextView chipUsb, chipMachine, chipCloud, chipRemote, chipCamera;
     private CameraStreamer camera;
@@ -346,7 +346,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         findViewById(R.id.jStop).setOnClickListener(v -> writeRaw(new byte[]{(byte) 0x85})); // jog cancel
 
         findViewById(R.id.btnNew).setOnClickListener(v -> confirmDiscard(this::newDocument));
-        findViewById(R.id.btnOpen).setOnClickListener(v -> confirmDiscard(this::openFile));
+        findViewById(R.id.btnOpen).setOnClickListener(v -> OpenDialog.show(this, filesHost));
         findViewById(R.id.btnSave).setOnClickListener(v -> save());
         findViewById(R.id.btnSaveAs).setOnClickListener(v -> saveAs());
         findViewById(R.id.btnClose).setOnClickListener(v -> confirmDiscard(this::closeDocument));
@@ -3205,7 +3205,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     /** Download a G-code file from the backoffice, save it to Documents/GrblSender and open it in the editor. */
     private void remoteOpen(String name, Runnable onOpened, ErrorCallback onError) {
         log("Downloading " + name + " from the backoffice…");
-        worker.execute(() -> {
+        // own thread, not the worker: a long preview parse there would hold the download back for minutes
+        new Thread(() -> {
             try {
                 byte[] data = RemoteLog.getBytes("/gcode/" + Uri.encode(name));
                 Uri uri = saveLocalFile(name, data);
@@ -3219,7 +3220,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 DebugLog.srvErr("Download of " + name + " failed: " + e.getMessage());
                 ui.post(() -> onError.onError("download failed: " + e.getMessage()));
             }
-        });
+        }, "remote-open").start();
     }
 
     /** Write {@code data} to Documents/GrblSender/{@code name} (replacing the app's own copy). Off the UI thread. */
