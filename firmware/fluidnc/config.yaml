@@ -29,10 +29,10 @@ axes:
   shared_stepper_reset_pin: NO_PIN
   homing_runs: 2
   X:
-    steps_per_mm: 84.882996
+    steps_per_mm: 84.001000
     max_rate_mm_per_min: 2000.000000
     acceleration_mm_per_sec2: 30.000000
-    max_travel_mm: 1950.000000
+    max_travel_mm: 2200.000000
     soft_limits: true
     idle_disable: true
     homing:
@@ -60,10 +60,10 @@ axes:
         ms3_pin: I2SO.3
         reset_pin: NO_PIN
   Y:
-    steps_per_mm: 84.882996
+    steps_per_mm: 83.663000
     max_rate_mm_per_min: 2000.000000
     acceleration_mm_per_sec2: 30.000000
-    max_travel_mm: 2500.000000
+    max_travel_mm: 2510.000000
     soft_limits: true
     idle_disable: true
     homing:
