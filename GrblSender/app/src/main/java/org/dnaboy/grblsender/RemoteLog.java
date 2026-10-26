@@ -204,6 +204,26 @@ public final class RemoteLog {
         return readResponse(c);
     }
 
+    /** POST the loaded program's text with the ingest key; the server checks it against {@code hash}. */
+    static void postProgram(String hash, String name, String text) throws Exception {
+        byte[] body = text.getBytes(StandardCharsets.UTF_8);
+        HttpURLConnection c = (HttpURLConnection) new URL(server + "/api/device/program").openConnection();
+        c.setConnectTimeout(5000);
+        c.setReadTimeout(60000);
+        c.setRequestMethod("POST");
+        c.setDoOutput(true);
+        c.setFixedLengthStreamingMode(body.length);
+        c.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
+        c.setRequestProperty("X-Ingest-Key", BuildConfig.INGEST_KEY);
+        c.setRequestProperty("X-Device-Id", deviceId());
+        c.setRequestProperty("X-Program-Hash", hash);
+        c.setRequestProperty("X-Program-Name", java.net.URLEncoder.encode(name != null ? name : "", "UTF-8"));
+        try (OutputStream os = c.getOutputStream()) {
+            os.write(body);
+        }
+        readResponse(c);
+    }
+
     /** GET {@code path} on the backoffice server (call off the UI thread). */
     static String get(String path) throws Exception { return getAbs(server + path); }
 

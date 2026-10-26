@@ -277,7 +277,27 @@
   .runs { display: flex; flex-direction: column; gap: 6px; }
   .runrow { display: flex; gap: 10px; align-items: center; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); font: 12px var(--mono); cursor: pointer; }
   .runrow:hover { border-color: var(--line2); } .runrow.on { border-color: var(--warn); }
-  @media (max-width: 1100px) { .g-side, .g2, .g-cam, .g-ai { grid-template-columns: 1fr; } .g3 { grid-template-columns: 1fr 1fr; } .dxlist { max-height: 340px; } }
+  /* ---------- live job ---------- */
+  .g-live { grid-template-columns: minmax(0, 1fr) 340px; align-items: start; }
+  .viewer.live { height: min(74vh, 860px); }
+  .viewer canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .ibtn.on { color: var(--cyan); border-color: var(--cyan); }
+  .ldro { display: grid; gap: 6px; margin: 12px 0; }
+  .ldro .ax { display: flex; align-items: baseline; justify-content: space-between; padding: 6px 12px; }
+  .ldro .ax div { font-size: 22px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 12px 0 0; font: 12.5px var(--mono); }
+  .kv dt { color: var(--dim); } .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .lwarn { margin-top: 10px; padding: 9px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.45; border: 1px solid; }
+  .lwarn.bad { color: var(--err); border-color: rgba(248, 113, 113, .4); background: rgba(248, 113, 113, .07); }
+  .lwarn.warn { color: var(--warn); border-color: rgba(251, 191, 36, .4); background: rgba(251, 191, 36, .07); }
+  .lwarn.ok { color: var(--ok); border-color: rgba(52, 211, 153, .35); background: rgba(52, 211, 153, .06); }
+  #lvLines div { white-space: pre; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; border-radius: 4px; }
+  #lvLines .n { color: var(--dim); margin-right: 8px; display: inline-block; min-width: 4.5ch; text-align: right; }
+  #lvLines .d { color: var(--dim); } #lvLines .b { color: var(--cyan); } #lvLines .x { color: var(--muted); }
+  #lvLines .c { color: #fde68a; background: rgba(250, 204, 21, .12); }
+  #lvLines .gap { color: var(--dim); font-style: italic; }
+  .lcam img { width: 100%; border-radius: 10px; display: block; background: #000; aspect-ratio: 16 / 9; object-fit: contain; }
+  @media (max-width: 1100px) { .g-side, .g2, .g-cam, .g-ai, .g-live { grid-template-columns: 1fr; } .g3 { grid-template-columns: 1fr 1fr; } .dxlist { max-height: 340px; } }
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; }
     aside.side { position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 40; transform: translateX(-100%); transition: transform .25s; }
@@ -295,7 +315,7 @@
     .camform { grid-template-columns: 1fr 1fr; } .camform .camgo { grid-column: 1 / -1; } .camgo .btn { flex: 1; }
     .viewer { height: 58vh; }
   }
-  @media (max-width: 520px) { #topState { display: none; } .ax div { font-size: 19px; } }
+  @media (max-width: 520px) { #topState, #lvInfo { display: none; } .ax div { font-size: 19px; } }
 </style>
 </head>
 <body>
@@ -311,10 +331,12 @@
       <a class="nav" href="#firmware" data-page="firmware"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></svg>Firmware files<span class="cnt" id="nFw"></span></a>
       <a class="nav" href="#apk" data-page="apk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>APK files<span class="cnt" id="nApk"></span></a>
       <div class="grp">Operate</div>
+      <a class="nav" href="#live" data-page="live"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19c3-9 6 1 9-6s5-6 7-8"/><circle cx="20" cy="5" r="2"/></svg>Live job<span class="cnt" id="nLive"></span></a>
       <a class="nav" href="#remote" data-page="remote"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a14 14 0 0 1 20 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/></svg>Remote control<span class="cnt" id="nRemote"></span></a>
       <a class="nav" href="#camera" data-page="camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="12.5" rx="2.5"/><path d="M8 7l1.5-2.5h5L16 7"/><circle cx="12" cy="13.2" r="3.6"/></svg>Camera<span class="cnt" id="nCam"></span></a>
       <a class="nav" href="#jobs" data-page="jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Job log</a>
       <div class="grp">Diagnostics</div>
+      <a class="nav" href="#setup" data-page="setup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M7 5V3m4 2V3m4 2V3M7 19v2m10-2v2M7 9h4v4H7zM15 10h2m-2 3h2"/></svg>CNC setup</a>
       <a class="nav" href="#logs" data-page="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h13"/></svg>Logs<span class="cnt" id="nLogs"></span></a>
       <a class="nav" href="#devices" data-page="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Devices<span class="cnt" id="nDev"></span></a>
       <div class="grp">Developer</div>
@@ -488,11 +510,15 @@
               <h2>Control</h2>
               <div class="ctl">
                 <button class="btn c-run" data-cmd="run">▶ Run</button>
+                <button class="btn" data-cmd="dryrun" title="X/Y only: Z never moves, no spindle, no dwells or M0 pauses">Dry run</button>
                 <button class="btn c-hold" data-cmd="hold">❚❚ Hold</button>
                 <button class="btn" data-cmd="resume">⏵ Resume</button>
                 <button class="btn c-stop" data-cmd="stop">■ Stop</button>
                 <button class="btn" data-cmd="unlock">$X Unlock</button>
-                <button class="btn" data-cmd="home">$H Home</button>
+                <button class="btn" data-cmd="home">$H Home all</button>
+                <button class="btn" data-cmd="home" data-axes="X">Home X</button>
+                <button class="btn" data-cmd="home" data-axes="Y">Home Y</button>
+                <button class="btn" data-cmd="home" data-axes="Z">Home Z</button>
                 <button class="btn" data-cmd="reset">↺ Reset</button>
                 <button class="btn" data-cmd="zero" data-axes="XY">Zero XY</button>
                 <button class="btn" data-cmd="zero" data-axes="Z">Zero Z</button>
@@ -501,6 +527,7 @@
                 <select class="in grow" id="rFile" aria-label="NC file on the backoffice"></select>
                 <button class="btn" id="rLoad" data-cmd-x="load">⇩ Load</button>
                 <button class="btn c-run" id="rRunFile" data-cmd-x="run">▶ Run file</button>
+                <button class="btn" id="rDryFile" title="X/Y only: Z never moves, no spindle, no dwells or M0 pauses">Dry run file</button>
               </div>
               <div class="row" style="margin-top:8px">
                 <input class="in grow mono" id="rLine" placeholder="G-code or $ command" autocomplete="off" spellcheck="false">
@@ -511,6 +538,58 @@
           <div class="card" style="display:flex;flex-direction:column">
             <h2>Console<span class="spacer"></span><button class="btn sm ghost" id="rClear">Clear view</button></h2>
             <div class="term" id="rConsole" style="flex:1;min-height:420px;max-height:calc(100vh - 200px)"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LIVE JOB -->
+      <section class="page" data-page="live" hidden>
+        <div class="grid g-live">
+          <div class="card">
+            <div class="h2"><span id="lvTitle" style="text-transform:none;letter-spacing:0;font-size:13px;color:var(--text)">No job</span><span class="spacer"></span><span class="dim mono" id="lvInfo" style="font-size:12px"></span></div>
+            <div class="viewer live" id="lview">
+              <canvas id="lvBase"></canvas><canvas id="lvTop"></canvas>
+              <div class="vmsg" id="lvMsg">Waiting for the tablet…</div>
+              <div class="coord" id="lvCoord"></div>
+              <div class="tools">
+                <button class="ibtn" id="lvReload" title="Read the file from the backoffice again"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
+                <button class="ibtn" id="lvFollow" title="Follow the tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></button>
+                <button class="ibtn" id="lvFit" title="Fit to view"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+              </div>
+            </div>
+            <div class="legend">
+              <span id="lvDepths"></span>
+              <span><span class="sw" style="background:rgba(226,232,240,.5);height:2px"></span> Remaining</span>
+              <label><input type="checkbox" id="lvRapid"><span class="sw" style="background:repeating-linear-gradient(90deg,#94a3b8 0 4px,transparent 4px 7px)"></span>Rapids</label>
+              <label><input type="checkbox" id="lvTrail" checked><span class="sw" style="background:#facc15"></span>Tool trail</label>
+            </div>
+          </div>
+          <div class="grid" style="align-content:start">
+            <div class="card">
+              <h2>Job</h2>
+              <div class="row"><span class="mpill" id="lvState">—</span><span class="dim mono" id="lvFile" style="font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1"></span></div>
+              <div class="ldro">
+                <div class="ax x"><span>X</span><div data-ax="0">—</div></div>
+                <div class="ax y"><span>Y</span><div data-ax="1">—</div></div>
+                <div class="ax z"><span>Z</span><div data-ax="2">—</div></div>
+              </div>
+              <div class="bar"><div data-prog></div></div>
+              <dl class="kv" id="lvKv"></dl>
+              <div id="lvCheck"></div>
+              <div class="row" style="margin-top:10px" id="lvSaveRow" hidden>
+                <button class="btn sm" id="lvSave" title="Copy the tablet's program into NC files">Save to NC files</button>
+                <a class="btn sm ghost" id="lvDl" title="Download the tablet's program">Download</a>
+              </div>
+            </div>
+            <div class="card">
+              <h2>G-code</h2>
+              <div class="term" id="lvLines" style="max-height:260px">—</div>
+            </div>
+            <div class="card">
+              <h2>Camera<span class="spacer"></span><button class="btn sm" id="lvCamBtn">Show</button></h2>
+              <div class="lcam"><img id="lvCam" alt="Live camera view of the CNC router" hidden></div>
+              <div class="dim" style="font-size:12px" id="lvCamTxt">Off: the tablet only runs its camera while someone watches.</div>
+            </div>
           </div>
         </div>
       </section>
@@ -621,6 +700,15 @@
         </div>
       </section>
 
+      <!-- CNC setup -->
+      <section class="page" data-page="setup" hidden>
+        <div class="card">
+          <h2>Controller board</h2>
+          <div class="dim" style="margin-bottom:10px">ESP32 multi-function control board (FluidNC): step/dir/enable outputs P1/P2, spindle &amp; mist P3, limits &amp; macros P4, laser J4. Click the picture for full size.</div>
+          <a href="/app/img/cnc-board.png" target="_blank" rel="noopener"><img src="/app/img/cnc-board.png" alt="ESP32 CNC control board wiring" loading="lazy" style="display:block;width:100%;height:auto;background:#fff;border-radius:8px"></a>
+        </div>
+      </section>
+
       <!-- API -->
       <section class="page" data-page="api" hidden>
         <div class="grid g2">
@@ -669,8 +757,8 @@ async function api(path, opts) {
 }
 
 /* =========================================================== router */
-const TITLES = { overview: 'Overview', files: 'NC files', cam: 'AI CAM', firmware: 'Firmware files', apk: 'APK files', remote: 'Remote control',
-  jobs: 'Job log', logs: 'Logs', devices: 'Devices', api: 'HTTP API', camera: 'Camera' };
+const TITLES = { overview: 'Overview', files: 'NC files', cam: 'AI CAM', firmware: 'Firmware files', apk: 'APK files', remote: 'Remote control', live: 'Live job',
+  jobs: 'Job log', logs: 'Logs', devices: 'Devices', api: 'HTTP API', camera: 'Camera', setup: 'CNC setup' };
 let page = 'overview';
 function route() {
   page = (location.hash.slice(1) || 'overview');
@@ -683,6 +771,7 @@ function route() {
   $('#content').scrollTop = 0;
   ({ overview: loadJobs, files: loadFiles, cam: loadDxf, firmware: loadFirmware, apk: loadReleases, jobs: loadJobs, devices: loadDevices, logs: () => render() }[page] || (() => {}))();
   if (page === 'camera') camStart(); else if (camRunning) camStop();
+  if (page === 'live') lvEnter(); else lvCam(false);
   if (page === 'logs' || page === 'remote') { const el = page === 'logs' ? $('#log') : $('#rConsole'); el.scrollTop = el.scrollHeight; }
 }
 addEventListener('hashchange', route);
@@ -704,7 +793,7 @@ function renderStatus(d) {
   $('#onDot').className = 'dot' + (d?.online ? ' on' : '');
   const st = !d ? 'NO TABLET' : !d.online ? 'OFFLINE' : s.connected ? (s.machine || 'Connected') : 'USB OFF';
   const col = d?.online && s.connected ? colorOf(s.machine) : 'var(--dim)';
-  for (const id of ['#topState', '#oState', '#rState', '#cState']) { const el = $(id); el.textContent = st + (s.streaming ? ' ▶' : ''); el.style.color = col; }
+  for (const id of ['#topState', '#oState', '#rState', '#cState', '#lvState']) { const el = $(id); el.textContent = st + (s.streaming ? (s.dryRun ? ' ▶ dry run' : ' ▶') : ''); el.style.color = col; }
   const usb = [s.boardName, s.usb, s.fw && `Grbl ${s.fw}`].filter(Boolean).join(' · ');
   $('#oUsb').textContent = usb; $('#rUsb').textContent = usb;
   const w = s.wpos || [];
@@ -726,6 +815,7 @@ function renderStatus(d) {
   $('#kTabS').textContent = d ? `${d.model || d.device.slice(0, 8)} · app ${d.app || '?'}` : 'waiting for a tablet';
   $('#kMach').textContent = st; $('#kMach').style.color = col;
   $('#kMachS').textContent = usb || ' ';
+  liveStatus(d);
 }
 async function poll() {
   try {
@@ -744,7 +834,11 @@ $('#device').onchange = () => { device = $('#device').value; renderStatus(tablet
 
 /* =========================================================== remote control */
 async function command(cmd, extra = {}) {
-  if ((cmd === 'run' || cmd === 'reset' || cmd === 'home') && !confirm(`Send "${cmd}" to the machine? Make sure the router is safe to move.`)) return;
+  if (cmd === 'dryrun') {
+    const st = (tablets.find((d) => d.device === device) || {}).status || {};
+    const z = st.wpos ? `work Z ${(+st.wpos[2]).toFixed(2)}, machine Z ${(+st.mpos[2]).toFixed(2)}` : 'its current height';
+    if (!confirm(`Dry run${extra.file ? ' ' + extra.file : ''}: X and Y move as programmed, but Z never moves, the spindle stays off and M0 pauses and dwells are skipped.\n\nZ stays at ${z}. Make sure the tool clears the stock, clamps and screws at that height.`)) return;
+  } else if ((cmd === 'run' || cmd === 'reset' || cmd === 'home') && !confirm(`Send "${cmd}" to the machine? Make sure the router is safe to move.`)) return;
   try {
     const c = await api('/api/cnc/command', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cmd, device, wait: true, ...extra }) });
@@ -754,6 +848,7 @@ async function command(cmd, extra = {}) {
 $$('[data-cmd]').forEach((b) => b.addEventListener('click', () => command(b.dataset.cmd, b.dataset.axes ? { axes: b.dataset.axes } : {})));
 $('#rLoad').onclick = () => $('#rFile').value && command('load', { file: $('#rFile').value });
 $('#rRunFile').onclick = () => $('#rFile').value && command('run', { file: $('#rFile').value });
+$('#rDryFile').onclick = () => $('#rFile').value && command('dryrun', { file: $('#rFile').value });
 $('#rSend').onclick = () => { const l = $('#rLine').value.trim(); if (l) { command('send', { line: l }); $('#rLine').value = ''; } };
 $('#rLine').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#rSend').click(); });
 $('#rClear').onclick = () => ($('#rConsole').innerHTML = '');
@@ -1027,6 +1122,7 @@ function renderFiles() {
           <a class="btn sm" href="/gcode/${encodeURIComponent(f.name)}" download>${ICON_DL}</a>
           <button class="btn sm" data-act="load" title="Load on the tablet">⇩ Load</button>
           <button class="btn sm c-run" data-act="run" title="Run on the tablet">▶ Run</button>
+          <button class="btn sm" data-act="dryrun" title="Dry run on the tablet: X/Y only, Z and spindle never move">Dry run</button>
           <span class="spacer"></span>
           <button class="btn sm danger ghost" data-act="del" title="Delete">✕</button>
         </div></div></div>`).join('');
@@ -1110,7 +1206,7 @@ $('#ncGrid').addEventListener('click', async (e) => {
     const p = previews.get(name);
     $('#mTitle').textContent = name; $('#mBody').innerHTML = p ? p.svg : b.innerHTML; $('#mInfo').textContent = p ? p.info : '';
     $('#modal').hidden = false;
-  } else if (act === 'load' || act === 'run') {
+  } else if (act === 'load' || act === 'run' || act === 'dryrun') {
     if (!device) return toast('No tablet connected', true);
     command(act, { file: name });
   } else if (act === 'del') {
@@ -1310,6 +1406,450 @@ viewer.addEventListener('pointerup', endDrag); viewer.addEventListener('pointerc
 viewer.addEventListener('pointerleave', () => ($('#vcoord').textContent = ''));
 $('#vFit').onclick = fitView;
 ['#lgDxf', '#lgCut', '#lgTab', '#lgRapid', '#lgText'].forEach((id) => ($(id).onchange = drawViewer));
+
+/* =========================================================== live job */
+// The tablet reports the file name, the SHA-256 of the loaded program (`progHash`, app 1.66+), its
+// line count and how many lines Grbl has accepted (`acked`, which runs ahead of the tool by the
+// planner buffer). The drawing is the tablet's own copy, which it uploads when the backoffice asks;
+// for older apps, and until that upload lands, it is the backoffice NC file with the same name,
+// checked by line count. Either way the live position must lie on the path just before `acked`.
+const LV_TOL = 1.5;      // mm: the reported position must be this close to the path
+const LV_BACK = 150;     // program lines behind `acked` searched for the tool
+const LV_PAL = ['#22d3ee', '#818cf8', '#c084fc', '#f472b6', '#fb923c', '#facc15', '#4ade80', '#f87171'];
+const LV = { want: '', p: null, src: '', pending: false, err: '', loading: false, fetched: 0, v: null, follow: false, trail: [], from: null, to: null,
+  at: 0, last: null, speed: null, cur: -1, curT: 0, dist: null, miss: 0, posBad: false, verified: false, match: false,
+  jobKey: '', d: null, raf: 0, baseDirty: true, topDirty: true, topKey: '', pass: -1, cam: false };
+
+// Comment stripping exactly as GCodeParser.stripComments does it
+function lvStrip(raw) {
+  let code = '', cmt = '', depth = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (depth === 0 && c === ';') { cmt += raw.slice(i + 1) + ' '; break; }
+    if (c === '(') { depth++; continue; }
+    if (c === ')' && depth > 0) { depth--; cmt += ' '; continue; }
+    if (depth > 0) cmt += c; else code += c;
+  }
+  return [code, cmt];
+}
+// Program lines counted like the tablet (no blank, comment-only or % lines) and the moves as 3D
+// segments [x0 y0 z0 x1 y1 z1 line rapid], in program order
+function parseLive(text) {
+  const prog = [], S = [], first = [];
+  let x = 0, y = 0, z = 0, xs = false, ys = false, abs = true, mode = 0, unit = 1, tool = 0;
+  for (const raw of text.split('\n')) {
+    const [code, cmt] = lvStrip(raw);
+    if (!tool && cmt) { const m = cmt.match(/\bD\s*=\s*(\d+(?:\.\d+)?)/i) || cmt.match(/(\d+(?:\.\d+)?)\s*mm\s+(?:flat|ball|end|bit|router)/i); if (m) tool = Number(m[1]); }
+    const clean = code.replace(/\s+/g, '').toUpperCase();
+    if (!clean || clean === '%') continue;
+    const idx = prog.length;
+    prog.push(raw.trim()); first.push(S.length / 8);
+    if (clean[0] === '$') continue;
+    const w = {}; let skip = false, lost = false;
+    for (const m of clean.matchAll(/([A-Z])([-+]?\d*\.?\d+)/g)) {
+      const k = m[1], n = Number(m[2]);
+      if (k !== 'G') { w[k] = n; continue; }
+      if (n === 90) abs = true; else if (n === 91) abs = false; else if (n === 20) unit = 25.4; else if (n === 21) unit = 1;
+      else if (n === 0 || n === 1 || n === 2 || n === 3) mode = n;
+      else if ([4, 10, 28, 30, 53, 92].includes(Math.floor(n))) { skip = true; lost ||= [28, 30, 53].includes(Math.floor(n)); }
+    }
+    const axes = 'X' in w || 'Y' in w || 'Z' in w;
+    if (skip || !axes) { if (lost && axes) xs = ys = false; continue; }    // a machine-coordinate move: position unknown
+    const nx = 'X' in w ? (abs ? 0 : x) + w.X * unit : x;
+    const ny = 'Y' in w ? (abs ? 0 : y) + w.Y * unit : y;
+    const nz = 'Z' in w ? (abs ? 0 : z) + w.Z * unit : z;
+    const known = xs && ys;          // moves before the first absolute X and Y start somewhere unknown
+    if ('X' in w && abs) xs = true;
+    if ('Y' in w && abs) ys = true;
+    if (known && mode >= 2 && ('I' in w || 'J' in w || 'R' in w)) {
+      let cx, cy;
+      const dx = nx - x, dy = ny - y;
+      if ('R' in w) {                // centre as Grbl computes it
+        const r = w.R * unit, d = Math.hypot(dx, dy) || 1;
+        let h = -Math.sqrt(Math.max(4 * r * r - dx * dx - dy * dy, 0)) / d;
+        if (mode === 3) h = -h;
+        if (r < 0) h = -h;
+        cx = x + 0.5 * (dx - dy * h); cy = y + 0.5 * (dy + dx * h);
+      } else { cx = x + (w.I || 0) * unit; cy = y + (w.J || 0) * unit; }
+      const r = Math.hypot(x - cx, y - cy), a0 = Math.atan2(y - cy, x - cx);
+      let sweep = Math.atan2(ny - cy, nx - cx) - a0;
+      if (mode === 2) { if (sweep >= 0) sweep -= 2 * Math.PI; } else if (sweep <= 0) sweep += 2 * Math.PI;
+      const n = Math.min(720, Math.max(4, Math.ceil(Math.abs(sweep) * r / 1.5)));
+      let px = x, py = y, pz = z;
+      for (let i = 1; i <= n; i++) {
+        const a = a0 + sweep * i / n;
+        const qx = i === n ? nx : cx + r * Math.cos(a), qy = i === n ? ny : cy + r * Math.sin(a), qz = z + (nz - z) * i / n;
+        S.push(px, py, pz, qx, qy, qz, idx, 0); px = qx; py = qy; pz = qz;
+      }
+    } else if (known && (nx !== x || ny !== y || nz !== z)) S.push(x, y, z, nx, ny, nz, idx, mode === 0 ? 1 : 0);
+    x = nx; y = ny; z = nz;
+  }
+  first.push(S.length / 8);
+  const a = Float64Array.from(S), n = a.length / 8;
+  // cut depths (flat cutting moves below Z0), shallow first: one colour per pass
+  const depths = [...new Set([...Array(n).keys()].filter((i) => !a[i * 8 + 7] && a[i * 8 + 5] < 0 && Math.abs(a[i * 8 + 2] - a[i * 8 + 5]) < 1e-6)
+    .map((i) => Math.round(a[i * 8 + 5] * 100) / 100))].sort((p, q) => q - p);
+  const col = new Uint8Array(n).fill(255), cum = new Float64Array(n + 1);
+  let b = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) {
+    const o = i * 8;
+    cum[i + 1] = cum[i] + Math.hypot(a[o + 3] - a[o], a[o + 4] - a[o + 1], a[o + 5] - a[o + 2]);
+    if (a[o + 7] || a[o + 5] >= 0 || !depths.length) continue;
+    let k = 0;
+    for (let j = 1; j < depths.length; j++) if (Math.abs(depths[j] - a[o + 5]) < Math.abs(depths[k] - a[o + 5])) k = j;
+    col[i] = k;
+    b = [Math.min(b[0], a[o], a[o + 3]), Math.min(b[1], a[o + 1], a[o + 4]), Math.max(b[2], a[o], a[o + 3]), Math.max(b[3], a[o + 1], a[o + 4])];
+  }
+  return { prog, a, n, first: Int32Array.from(first), depths, col, cum, tool, bbox: isFinite(b[0]) ? b : null };
+}
+const lvColor = (k, N) => N <= LV_PAL.length ? LV_PAL[k] : `hsl(${190 + 150 * k / (N - 1)} 85% 62%)`;
+
+// The segment the tool is on: nearest in 3D among the lines a little before `acked`
+function lvLocate(p, acked, x, y, z) {
+  const A = Math.min(acked, p.prog.length), a = p.a;
+  const lo = p.first[Math.max(0, A - LV_BACK)], hi = p.first[Math.min(p.prog.length, A + 2)];
+  let best = null;
+  for (let i = lo; i < hi; i++) {
+    const o = i * 8, dx = a[o + 3] - a[o], dy = a[o + 4] - a[o + 1], dz = a[o + 5] - a[o + 2], L = dx * dx + dy * dy + dz * dz;
+    const t = L ? Math.min(1, Math.max(0, ((x - a[o]) * dx + (y - a[o + 1]) * dy + (z - a[o + 2]) * dz) / L)) : 0;
+    const d = Math.hypot(a[o] + t * dx - x, a[o + 1] + t * dy - y, a[o + 2] + t * dz - z);
+    const score = d + (i < LV.cur ? 0.3 : 0);           // the tool does not go backwards
+    if (!best || score <= best.score + 1e-6) best = { seg: i, t, dist: d, score };
+  }
+  return best;
+}
+function lvAt(p, L) {                // point at path length L
+  let lo = 0, hi = p.n - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (p.cum[m] <= L) lo = m; else hi = m - 1; }
+  const o = lo * 8, len = p.cum[lo + 1] - p.cum[lo], t = len ? Math.min(1, Math.max(0, (L - p.cum[lo]) / len)) : 0;
+  const a = p.a;
+  return { x: a[o] + (a[o + 3] - a[o]) * t, y: a[o + 1] + (a[o + 4] - a[o + 1]) * t, z: a[o + 2] + (a[o + 5] - a[o + 2]) * t };
+}
+// Displayed tool position: glides from the last shown point to the newest report, along the
+// toolpath when both ends are on it
+function lvPos() {
+  const to = LV.to, f = LV.from;
+  if (!to) return null;
+  const k = f ? Math.min(1, (performance.now() - to.r) / to.d) : 1;
+  if (k >= 1) return to;
+  if (LV.p && to.L != null && f.L != null && to.L >= f.L && to.L - f.L < 3000) { const L = f.L + (to.L - f.L) * k; return { ...lvAt(LV.p, L), L }; }
+  return { x: f.x + (to.x - f.x) * k, y: f.y + (to.y - f.y) * k, z: f.z + (to.z - f.z) * k, L: null };
+}
+
+const lvKey = (st) => st.progHash ? 'h:' + st.progHash : st.file ? 'n:' + st.file : '';
+async function lvLoad(st, keepView) {
+  const key = lvKey(st), name = st.file || '', hash = st.progHash || '';
+  LV.want = key; LV.err = ''; LV.loading = !!key; LV.fetched = Date.now();
+  if (!keepView) { LV.p = null; LV.src = ''; LV.pending = false; LV.cur = -1; LV.miss = 0; LV.posBad = false; LV.verified = false; LV.v = null; }
+  lvPanel();
+  if (!key) { LV.baseDirty = true; return; }
+  const get = async (url) => {
+    const r = await fetch(url, { cache: 'no-store' });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.text();
+  };
+  let text = null, src = '', err = '', pending = false;
+  try {
+    if (hash) text = await get('/api/cnc/program?hash=' + hash);
+    if (text != null) src = 'tablet';
+    else {
+      pending = !!hash;                   // the tablet uploads it after its next sync
+      if (name) text = await get('/gcode/' + encodeURIComponent(name));
+      if (text != null) src = 'name'; else err = 'missing';
+    }
+  } catch (e) { err = e.message; }
+  if (LV.want !== key) return;
+  LV.loading = false; LV.fetched = Date.now(); LV.pending = pending;
+  if (text != null && (src !== LV.src || !keepView || !LV.p)) {
+    LV.p = parseLive(text); LV.src = src; LV.cur = -1; LV.miss = 0; LV.posBad = false; LV.verified = false;
+    if (LV.from) LV.from.L = null;
+    if (LV.to) LV.to.L = null;
+  } else if (text == null && !(keepView && LV.p)) { LV.p = null; LV.src = ''; }
+  LV.err = LV.p ? '' : err;
+  if (!keepView || !LV.v) lvFit();        // the view may have been set around the tool before the file arrived
+  LV.baseDirty = true; lvPanel();
+}
+
+function liveStatus(d) {
+  LV.d = d;
+  const st = d?.status;
+  if (!st) return lvPanel();
+  if (lvKey(st) !== LV.want) lvLoad(st);
+  else if (LV.want && !LV.loading && Date.now() - LV.fetched > (LV.pending ? 4000 : 30000)
+    && (LV.pending || LV.err || (LV.p && st.lines !== LV.p.prog.length))) lvLoad(st, true);
+  const jk = `${st.jobId}|${st.file}`;
+  if (jk !== LV.jobKey) { LV.jobKey = jk; LV.trail = []; LV.cur = -1; LV.miss = 0; LV.posBad = false; LV.verified = false; LV.speed = null; LV.baseDirty = true; }
+  if (!st.at || st.at === LV.at || !st.wpos) return lvPanel();
+  const [x, y, z] = st.wpos.map(Number), now = performance.now(), dt = LV.at ? st.at - LV.at : 0;
+  if (LV.last && dt > 300 && dt < 5000) {
+    const v = Math.hypot(x - LV.last.x, y - LV.last.y, z - LV.last.z) / dt * 60000;
+    LV.speed = LV.speed == null ? v : LV.speed * 0.4 + v * 0.6;
+  }
+  LV.last = { x, y, z }; LV.at = st.at;
+  const p = LV.p, same = !!p && st.lines === p.prog.length;
+  let loc = null;
+  if (same && st.streaming) {
+    loc = lvLocate(p, st.acked, x, y, z);
+    if (loc) {
+      LV.dist = loc.dist;
+      if (loc.dist > LV_TOL) LV.miss++; else { LV.miss = 0; LV.verified = true; LV.cur = loc.seg; LV.curT = loc.t; }
+      LV.posBad = LV.miss >= 3;          // a few reports in a row, not one stale sample
+    }
+  } else if (same) { LV.cur = st.acked >= st.lines ? p.n : p.first[Math.min(st.acked, p.prog.length)]; LV.curT = 0; }
+  LV.match = same && !LV.posBad;
+  const on = loc && loc.dist <= LV_TOL;
+  LV.from = lvPos();
+  LV.to = { x, y, z, L: on ? p.cum[loc.seg] + loc.t * (p.cum[loc.seg + 1] - p.cum[loc.seg]) : null, r: now, d: Math.min(Math.max(dt || 1000, 300), 3000) };
+  const t = LV.trail.at(-1);
+  if (!t || Math.hypot(t[0] - x, t[1] - y) > 0.2) { LV.trail.push([x, y]); if (LV.trail.length > 3000) LV.trail.splice(0, 500); }
+  LV.baseDirty = true;
+  lvPanel();
+}
+
+// ---- panel text, checks, G-code lines
+function lvPanel() {
+  const d = LV.d, st = d?.status || {}, p = LV.p;
+  $('#lvTitle').textContent = st.file || 'No job';
+  $('#lvFile').textContent = !d ? '' : st.streaming ? (st.paused ? 'paused' : st.dryRun ? 'dry run (X/Y only)' : 'streaming') : st.loaded ? 'loaded, not running' : '';
+  $('#nLive').textContent = st.streaming && d?.online ? '●' : ''; $('#nLive').className = 'cnt' + (st.streaming && d?.online ? ' live' : '');
+  const b = p?.bbox;
+  $('#lvInfo').textContent = p ? `${LV.src === 'tablet' ? 'tablet copy' : 'backoffice file'} · ${p.prog.length} lines${b ? ` · ${(b[2] - b[0]).toFixed(0)} × ${(b[3] - b[1]).toFixed(0)} mm` : ''}${p.tool ? ` · Ø${p.tool} tool` : ''}` : '';
+  const shared = LV.src === 'tablet' && st.progHash;
+  $('#lvSaveRow').hidden = !shared;
+  if (shared) { $('#lvDl').href = '/api/cnc/program?hash=' + st.progHash; $('#lvDl').download = st.file || 'tablet.nc'; }
+  const msg = !d ? 'Waiting for the tablet…' : !st.file ? 'No file is open on the tablet'
+    : LV.loading ? 'reading the backoffice copy…'
+    : LV.err === 'missing' ? (LV.pending ? 'waiting for the tablet to share its copy…' : `“${st.file}” is not on the backoffice:\nshowing the tool trail only`)
+    : LV.err ? `✖ ${LV.err}` : '';
+  $('#lvMsg').textContent = msg; $('#lvMsg').hidden = !msg;
+  // pass = depth bucket of the segment being cut (kept while the tool is on a rapid or a plunge)
+  const ci = LV.match && LV.cur >= 0 && LV.cur < p.n ? p.col[LV.cur] : 255;
+  if (ci !== 255) LV.pass = ci;
+  if (!LV.match) LV.pass = -1;
+  const A = Number(st.acked) || 0, curLine = LV.match && LV.cur >= 0 && LV.cur < p.n ? p.a[LV.cur * 8 + 6] : -1;
+  const eta = st.streaming && st.etaSec != null ? st.etaSec : null;
+  const fin = eta != null ? new Date(Date.now() + eta * 1000) : null;
+  const rows = [
+    ['Line', st.lines ? `${A} / ${st.lines} sent` : '—'],
+    curLine >= 0 && st.streaming ? ['Cutting', `line ${curLine + 1}${A - curLine - 1 > 0 ? ` (${A - curLine - 1} buffered)` : ''}`] : null,
+    ['Pass', p?.depths.length && LV.pass >= 0 ? `${LV.pass + 1} / ${p.depths.length} · Z ${p.depths[LV.pass].toFixed(2)}` : '—'],
+    ['Elapsed', st.streaming ? hms(st.elapsedSec) : '—'],
+    ['Left', eta != null ? hms(eta) : st.estSec ? `est. ${hms(st.estSec)}` : '—'],
+    ['Done at', fin ? `${pad(fin.getHours())}:${pad(fin.getMinutes())}` : '—'],
+    ['Speed', st.streaming && LV.speed != null ? `≈ ${Math.round(LV.speed)} mm/min` : '—'],
+    st.errors ? ['Errors', String(st.errors)] : null,
+  ].filter(Boolean);
+  $('#lvKv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
+  $('#lvCheck').innerHTML = lvChecks(d, st, p).map(([lvl, t]) => `<div class="lwarn ${lvl}">${esc(t)}</div>`).join('');
+  $('#lvDepths').innerHTML = p?.depths.length ? 'Cut, by pass: ' + p.depths.map((z, k) => `<span style="margin-right:8px;white-space:nowrap"><span class="sw" style="background:${lvColor(k, p.depths.length)};height:5px"></span> ${z.toFixed(1)}</span>`).join('') : '';
+  lvLines(p, A, curLine);
+}
+function lvChecks(d, st, p) {
+  if (!d) return [];
+  const out = [], tab = LV.src === 'tablet';
+  if (!d.online) out.push(['warn', 'The tablet is offline: the drawing shows its last report.']);
+  if (!st.file && !st.progHash) return out;
+  if (LV.pending) out.push(['warn', p ? `Waiting for the tablet to share its copy; meanwhile this is the backoffice file named “${st.file}”.` : 'Waiting for the tablet to share its copy of the program…']);
+  else if (LV.err === 'missing') out.push(['bad', `“${st.file}” is not on the backoffice, so its toolpath can't be drawn. Update the tablet app to 1.66+ (it shares its own copy), or upload the same file to NC files.`]);
+  else if (LV.err) out.push(['bad', `Could not read the program: ${LV.err}`]);
+  if (!p) return out;
+  if (st.lines !== p.prog.length) out.push(['bad', `Different copy: the tablet sends ${st.lines} lines, the backoffice “${st.file}” has ${p.prog.length}. Done/remaining colours are hidden.`]);
+  else if (LV.posBad) out.push(['bad', tab ? `The tool is ${LV.dist.toFixed(1)} mm from the path near line ${st.acked}, although this is the tablet's own copy: the work offset (G54) probably changed after the job started. Done/remaining colours are hidden.`
+    : `The tool is ${LV.dist.toFixed(1)} mm from the path near line ${st.acked}: the backoffice copy may differ from the tablet's, or the work offset (G54) moved. Done/remaining colours are hidden.`]);
+  if (st.dirty && !tab) out.push(['warn', 'The file was edited on the tablet after opening; the drawing may differ.']);
+  if (st.lines === p.prog.length && !LV.posBad) {
+    const pos = LV.verified ? ` The tool is on the path (${LV.dist != null ? LV.dist.toFixed(2) : '0'} mm).` : ' The position is checked while the job runs.';
+    out.push(tab ? ['ok', `✔ The tablet's own copy (${p.prog.length} lines, SHA-256 ${st.progHash.slice(0, 10)}…).${pos}`]
+      : ['ok', `${LV.verified ? '✔ ' : ''}Backoffice file with the same name and line count (${p.prog.length}).${pos}`]);
+    if (!tab && !st.progHash && st.app) out.push(['warn', `Tablet app ${st.app} does not share its program; 1.66+ does, so the drawing is always its exact copy.`]);
+  }
+  return out;
+}
+function lvLines(p, A, curLine) {
+  const box = $('#lvLines');
+  if (!p) { box.textContent = '—'; return; }
+  const key = `${A}|${curLine}|${p.prog.length}`;
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const at = curLine >= 0 ? curLine : Math.min(A, p.prog.length - 1);
+  const row = (i, cls) => `<div class="${cls}"><span class="n">${i + 1}</span>${esc(p.prog[i])}</div>`;
+  const cls = (i) => curLine < 0 ? (i < A ? 'd' : 'x') : i < curLine ? 'd' : i === curLine ? 'c' : i < A ? 'b' : 'x';
+  let h = '';
+  const lo = Math.max(0, at - 3), hi = Math.min(p.prog.length, at + 10);
+  for (let i = lo; i < hi; i++) h += row(i, cls(i));
+  if (curLine >= 0 && A > hi) {
+    h += `<div class="gap">… ${A - hi} more in the controller buffer …</div>`;
+    for (let i = Math.max(hi, A - 2); i < Math.min(p.prog.length, A + 3); i++) h += row(i, cls(i));
+  }
+  box.innerHTML = h || '—';
+}
+
+// ---- drawing: base canvas = toolpath, top canvas = tool, trail, current segment
+function lvSize() { const el = $('#lview'); return { W: el.clientWidth, H: el.clientHeight }; }
+function lvResize() {
+  const { W, H } = lvSize();
+  if (!W || !H) return;
+  const dpr = devicePixelRatio || 1;
+  for (const c of [$('#lvBase'), $('#lvTop')]) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  if (!LV.v) lvFit();
+  LV.baseDirty = true;
+}
+function lvFit() {
+  const { W, H } = lvSize();
+  if (!W || !H) return;
+  const pos = lvPos();
+  const b = LV.p?.bbox || (pos ? [pos.x - 200, pos.y - 200, pos.x + 200, pos.y + 200] : [0, 0, 1219, 2438]);
+  const bw = Math.max(b[2] - b[0], 10), bh = Math.max(b[3] - b[1], 10);
+  LV.v = { cx: (b[0] + b[2]) / 2, cy: (b[1] + b[3]) / 2, s: Math.min(W / (bw * 1.08), H / (bh * 1.08)) };
+  LV.baseDirty = true;
+}
+function lvCtx(c) {
+  const { W, H } = lvSize(), g = c.getContext('2d'), k = c.width / (W || 1), v = LV.v;
+  g.setTransform(k, 0, 0, k, 0, 0); g.clearRect(0, 0, W, H);
+  return { g, W, H, X: (x) => (x - v.cx) * v.s + W / 2, Y: (y) => H / 2 - (y - v.cy) * v.s };
+}
+function lvDrawBase() {
+  if (!LV.v) return;
+  const { g, X, Y } = lvCtx($('#lvBase'));
+  g.lineWidth = 1.5;                    // work origin
+  g.strokeStyle = 'rgba(251,113,133,.8)'; g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(0) + 36, Y(0)); g.stroke();
+  g.strokeStyle = 'rgba(163,230,53,.8)'; g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(0), Y(0) - 36); g.stroke();
+  const p = LV.p;
+  if (!p) return;
+  const a = p.a, n = p.n, cur = LV.match ? LV.cur : -1, N = p.depths.length;
+  const seg = (path, o, t = 1) => { path.moveTo(X(a[o]), Y(a[o + 1])); path.lineTo(X(a[o] + (a[o + 3] - a[o]) * t), Y(a[o + 1] + (a[o + 4] - a[o + 1]) * t)); };
+  // done: one stroke per pass at the tool's width, shallow first so deeper passes paint on top
+  if (cur > 0 || (cur === 0 && LV.curT > 0)) {
+    const done = Array.from({ length: Math.max(N, 1) }, () => new Path2D());
+    for (let i = 0; i <= Math.min(cur, n - 1); i++) {
+      if (p.col[i] === 255) continue;
+      if (i < cur) seg(done[p.col[i]], i * 8); else if (LV.curT > 0) seg(done[p.col[i]], i * 8, LV.curT);
+    }
+    g.lineCap = g.lineJoin = 'round';
+    g.lineWidth = p.tool ? Math.max(2.5, p.tool * LV.v.s) : 2.5;
+    g.globalAlpha = 0.85;
+    done.forEach((path, k) => { g.strokeStyle = lvColor(k, N); g.stroke(path); });
+    g.globalAlpha = 1;
+  }
+  // remaining cuts as a thin line on top, so later passes over finished ones stay visible
+  const rest = new Path2D(), rap = new Path2D();
+  for (let i = Math.max(cur, 0); i < n; i++) if (!a[i * 8 + 7]) seg(rest, i * 8);
+  g.lineWidth = 1.1; g.strokeStyle = 'rgba(226,232,240,.5)'; g.stroke(rest);
+  if ($('#lvRapid').checked) {
+    for (let i = 0; i < n; i++) if (a[i * 8 + 7]) seg(rap, i * 8);
+    g.setLineDash([4, 4]); g.lineWidth = 1; g.strokeStyle = 'rgba(148,163,184,.55)'; g.stroke(rap); g.setLineDash([]);
+  }
+}
+function lvDrawTop(pos) {
+  if (!LV.v) return;
+  const { g, X, Y } = lvCtx($('#lvTop')), p = LV.p;
+  if ($('#lvTrail').checked && LV.trail.length) {
+    g.beginPath();
+    LV.trail.forEach(([x, y], i) => (i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))));
+    if (pos) g.lineTo(X(pos.x), Y(pos.y));
+    g.lineWidth = 1.5; g.strokeStyle = 'rgba(250,204,21,.65)'; g.lineJoin = 'round'; g.stroke();
+  }
+  if (p && LV.match && LV.cur >= 0 && LV.cur < p.n) {
+    const o = LV.cur * 8, a = p.a;
+    g.beginPath(); g.moveTo(X(a[o]), Y(a[o + 1])); g.lineTo(X(a[o + 3]), Y(a[o + 4]));
+    g.lineWidth = 3; g.lineCap = 'round'; g.strokeStyle = '#fff'; g.stroke();
+  }
+  if (!pos) return;
+  const cx = X(pos.x), cy = Y(pos.y), r = Math.max(6, (p?.tool || 6) / 2 * LV.v.s);
+  g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI);
+  g.fillStyle = pos.z < 0 ? 'rgba(248,113,113,.25)' : 'rgba(250,204,21,.2)'; g.fill();
+  g.lineWidth = 2; g.strokeStyle = pos.z < 0 ? '#f87171' : '#facc15'; g.stroke();
+  g.beginPath(); g.moveTo(cx - r - 7, cy); g.lineTo(cx + r + 7, cy); g.moveTo(cx, cy - r - 7); g.lineTo(cx, cy + r + 7);
+  g.lineWidth = 1; g.stroke();
+  g.font = '600 12px "JetBrains Mono", ui-monospace, monospace'; g.fillStyle = '#e6edf6';
+  g.fillText(`Z ${pos.z.toFixed(2)}`, cx + r + 9, cy - 6);
+}
+function lvLoop() {
+  if (page !== 'live') { LV.raf = 0; return; }
+  LV.raf = requestAnimationFrame(lvLoop);
+  const pos = lvPos();
+  if (LV.follow && pos && LV.v) {             // re-centre when the tool leaves the middle of the view
+    const { W, H } = lvSize(), sx = (pos.x - LV.v.cx) * LV.v.s, sy = (pos.y - LV.v.cy) * LV.v.s;
+    if (Math.abs(sx) > W * 0.3 || Math.abs(sy) > H * 0.3) { LV.v.cx = pos.x; LV.v.cy = pos.y; LV.baseDirty = true; }
+  }
+  if (LV.baseDirty) { LV.baseDirty = false; lvDrawBase(); LV.topDirty = true; }
+  const key = pos ? `${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}` : '';
+  if (key !== LV.topKey || LV.topDirty) { LV.topKey = key; LV.topDirty = false; lvDrawTop(pos); }
+}
+function lvEnter() {
+  requestAnimationFrame(() => { lvResize(); lvPanel(); if (!LV.raf) lvLoop(); });
+}
+function lvCam(on) {
+  LV.cam = on;
+  const img = $('#lvCam');
+  if (on && device) img.src = `/api/cnc/camera.mjpeg?device=${encodeURIComponent(device)}&size=540p&fps=3&quality=80&v=lv-${camViewer}&t=${Date.now()}`;
+  else img.removeAttribute('src');
+  img.hidden = !on;
+  $('#lvCamBtn').textContent = on ? 'Hide' : 'Show';
+  $('#lvCamTxt').hidden = on;
+}
+$('#lvCamBtn').onclick = () => lvCam(!LV.cam);
+$('#lvFit').onclick = () => { LV.follow = false; $('#lvFollow').classList.remove('on'); lvFit(); };
+$('#lvFollow').onclick = () => {
+  LV.follow = !LV.follow; $('#lvFollow').classList.toggle('on', LV.follow);
+  const pos = lvPos();
+  if (LV.follow && pos && LV.v) { LV.v.cx = pos.x; LV.v.cy = pos.y; LV.v.s = Math.max(LV.v.s, 1.5); LV.baseDirty = true; }
+};
+$('#lvReload').onclick = () => LV.d?.status && lvLoad(LV.d.status, true);
+$('#lvSave').onclick = async () => {
+  const st = LV.d?.status || {};
+  if (!st.progHash) return;
+  let name = (st.file || 'tablet.nc').replace(/[^\w.\- ()]/g, '_');
+  if (!/\.(nc|gcode|ngc|tap)$/i.test(name)) name += '.nc';
+  const post = (overwrite) => fetch('/api/cnc/program/save', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hash: st.progHash, name, overwrite }) });
+  try {
+    let r = await post(false);
+    if (r.status === 409) {
+      if (!confirm(`${name} already exists in NC files with different content. Replace it with the tablet's copy?`)) return;
+      r = await post(true);
+    }
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.error || `HTTP ${r.status}`);
+    toast(b.same ? `✔ ${name} in NC files is already the same program` : `✔ Saved ${name} to NC files`);
+  } catch (e) { toast('✖ ' + e.message, true); }
+};
+['#lvRapid', '#lvTrail'].forEach((id) => ($(id).onchange = () => { LV.baseDirty = true; }));
+new ResizeObserver(() => page === 'live' && lvResize()).observe($('#lview'));
+{
+  const el = $('#lview'), pts = new Map();
+  let drag = null, pinch = null;
+  const world = (e) => { const r = el.getBoundingClientRect(), { W, H } = lvSize(); return { mx: e.clientX - r.left - W / 2, my: e.clientY - r.top - H / 2 }; };
+  const zoom = (e, k) => {
+    if (!LV.v) return;
+    const { mx, my } = world(e), v = LV.v, wx = mx / v.s + v.cx, wy = v.cy - my / v.s;
+    v.s = Math.min(Math.max(v.s * k, 0.02), 200);
+    v.cx = wx - mx / v.s; v.cy = wy + my / v.s; LV.baseDirty = true;
+  };
+  el.addEventListener('wheel', (e) => { e.preventDefault(); zoom(e, Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
+  el.addEventListener('pointerdown', (e) => {
+    if (!LV.v || e.target.closest('.tools')) return;
+    el.setPointerCapture(e.pointerId); pts.set(e.pointerId, e);
+    if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); drag = null; }
+    else { drag = { x: e.clientX, y: e.clientY, cx: LV.v.cx, cy: LV.v.cy }; el.classList.add('drag'); }
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (LV.v) { const { mx, my } = world(e); $('#lvCoord').textContent = `X ${(mx / LV.v.s + LV.v.cx).toFixed(1)}  Y ${(LV.v.cy - my / LV.v.s).toFixed(1)} mm`; }
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, e);
+    if (pinch && pts.size === 2) {
+      const [a, b] = [...pts.values()], d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      zoom({ clientX: (a.clientX + b.clientX) / 2, clientY: (a.clientY + b.clientY) / 2 }, d / pinch); pinch = d;
+    } else if (drag) {
+      if (LV.follow) { LV.follow = false; $('#lvFollow').classList.remove('on'); }
+      LV.v.cx = drag.cx - (e.clientX - drag.x) / LV.v.s; LV.v.cy = drag.cy + (e.clientY - drag.y) / LV.v.s; LV.baseDirty = true;
+    }
+  });
+  const end = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) { drag = null; el.classList.remove('drag'); } };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  el.addEventListener('pointerleave', () => ($('#lvCoord').textContent = ''));
+}
 
 // ---- AI CAM runs
 async function loadRuns() {
@@ -1622,7 +2162,9 @@ const EPS = [
   ['GET', '/api/cnc', 'Tablets with their live status'],
   ['GET', '/api/cnc/status?device=', 'One tablet (default: the last one seen)'],
   ['GET', '/api/cnc/console?after=SEQ', 'Console lines sent (>>) and received'],
-  ['POST', '/api/cnc/command', '{"cmd":"run|hold|resume|stop|load|send|unlock|home|reset|zero|status", "file":"x.nc", "line":"G0X0", "axes":"XY", "wait":true}'],
+  ['GET', '/api/cnc/program?hash=SHA256', 'The program a tablet has loaded (status.progHash), as the tablet shared it'],
+  ['POST', '/api/cnc/program/save', '{"hash":"…", "name":"x.nc", "overwrite":false} copies a shared program into NC files'],
+  ['POST', '/api/cnc/command', '{"cmd":"run|dryrun|hold|resume|stop|load|send|unlock|home|reset|zero|status", "file":"x.nc", "line":"G0X0", "axes":"XY (zero) or X|Y|Z (home; empty = all)", "wait":true}'],
   ['GET', '/api/cnc/command?id=ID', 'Command state and result'],
   ['GET', '/api/cnc/camera.mjpeg?size=540p&fps=5', 'Live MJPEG stream of the tablet camera (VLC, OBS, <img>)'],
   ['GET', '/api/cnc/camera/snapshot.jpg', 'One current picture'],

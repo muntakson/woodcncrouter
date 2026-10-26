@@ -6,6 +6,8 @@ import android.os.Looper;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -17,6 +19,10 @@ import java.util.Set;
  * finished commands and unsynced job-log events; the server answers with commands queued
  * through its HTTP API (/api/cnc/command), holding the request open up to {@link #WAIT_MS}
  * so a command reaches the tablet as soon as it is issued.
+ *
+ * <p>The status carries the SHA-256 of the loaded program ({@code progHash}). When the server does
+ * not have that program yet its reply says {@code program.want}, and the text is uploaded once to
+ * /api/device/program, so the dashboard draws exactly what the tablet streams.
  */
 final class RemoteControl {
 
@@ -43,6 +49,9 @@ final class RemoteControl {
     private volatile int gen;               // bumped by stop(): an older loop still blocked in HTTP then exits
     private long consoleSeq;
     private volatile CameraStreamer camera;
+    private volatile String progHash, progName, progText;   // the loaded program, shared on request
+    private volatile String progUploading;                  // hash of an upload in progress
+    private volatile long progRetryAtMs;
 
     RemoteControl(Host host, JobLog jobs) {
         this.host = host;
@@ -51,6 +60,25 @@ final class RemoteControl {
 
     void setStatus(JSONObject s) { status = s; }
     void setCamera(CameraStreamer c) { camera = c; }
+
+    /** The program Load produced (null when none); its text is uploaded if the backoffice asks. */
+    void setProgram(String hash, String name, String text) {
+        progText = text;
+        progName = name;
+        progHash = hash;
+        progRetryAtMs = 0;
+    }
+
+    static String sha256(String text) {
+        try {
+            byte[] d = MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : d) sb.append(String.format("%02x", b & 0xff));
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
     void setStateListener(StateListener l) { stateListener = l; }
     boolean isOnline() { return online; }
     String lastError() { return lastError; }
@@ -118,6 +146,7 @@ final class RemoteControl {
                 if (g != gen) break;
                 CameraStreamer cs = camera;
                 if (cs != null) cs.onRemoteWish(resp.optJSONObject("camera"));
+                shareProgram(resp.optJSONObject("program"));
                 JSONArray cmds = resp.optJSONArray("commands");
                 for (int i = 0; cmds != null && i < cmds.length(); i++) dispatch(cmds.getJSONObject(i));
             } catch (Exception e) {
@@ -131,6 +160,30 @@ final class RemoteControl {
                 backoffMs = Math.min(backoffMs * 2, 30000);
             }
         }
+    }
+
+    /** Upload the loaded program when the sync reply asks for it (one upload at a time, off the sync loop). */
+    private void shareProgram(JSONObject wish) {
+        final String want = wish != null ? wish.optString("want", "") : "";
+        final String hash = progHash, name = progName, text = progText;
+        if (want.isEmpty() || hash == null || text == null || !want.equals(hash)) return;
+        if (progUploading != null || System.currentTimeMillis() < progRetryAtMs) return;
+        progUploading = hash;
+        Thread t = new Thread(() -> {
+            try {
+                RemoteLog.postProgram(hash, name, text);
+                DebugLog.srv("Program shared with the backoffice: " + (name != null ? name : "untitled")
+                        + " (" + (text.length() + 1023) / 1024 + " KB)");
+            } catch (Exception e) {
+                progRetryAtMs = System.currentTimeMillis() + 15000;
+                DebugLog.srvErr("Program upload failed: " + e.getClass().getSimpleName()
+                        + (e.getMessage() != null ? ": " + e.getMessage() : "") + " – retrying in 15 s");
+            } finally {
+                progUploading = null;
+            }
+        }, "program-upload");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void dispatch(JSONObject c) {

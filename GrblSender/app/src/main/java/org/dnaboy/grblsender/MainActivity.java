@@ -105,6 +105,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private final List<GCodeParser.Line> program = new ArrayList<>();
     private GCodeParser.Result job;            // what Load produced; streamed by Run
     private String jobText;                    // editor text the job was built from
+    private String jobHash;                    // its SHA-256, reported so the backoffice can draw the same program
     private int nextLine = 0;
     private int ackedLines = 0;
     private int errorCount = 0;
@@ -206,15 +207,19 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private GCodeViewer viewer;
     /** Text of a large document shown read-only in {@link #viewer}; null when the editor holds the document. */
     private String largeText;
-    private static final int LARGE_LINES = 1500;   // the U320 ROM makes highlighting a 3500-line file in the editor take minutes (ANR)
-    private static final int LARGE_CHARS = 60_000;
+    private static final int LARGE_LINES = 300;    // the U320 ROM's editor is slow: 808 lines froze the UI for 23 s, 3500 took minutes (ANR)
+    private static final int LARGE_CHARS = 12_000;
     private ToolpathView preview;
     private TextView chipUsb, chipMachine, chipCloud, chipRemote, chipCamera;
     private CameraStreamer camera;
     private View pageControl;
     private FrameLayout pageSettings;
-    private final LinearLayout[] navItems = new LinearLayout[5];
-    private static final int NAV_CONTROL = 0, NAV_SETTINGS = 1, NAV_WIRING = 2, NAV_SETUP = 3, NAV_ABOUT = 4;
+    private FrameLayout pageSafety;
+    private String homedAxes = "";             // axes homed since connecting (for the safety check)
+    private String pendingHome;                // axes of the $H in progress
+    private long connectedAtMs;
+    private final LinearLayout[] navItems = new LinearLayout[7];
+    private static final int NAV_CONTROL = 0, NAV_SETTINGS = 1, NAV_WIRING = 2, NAV_SETUP = 3, NAV_JOB = 4, NAV_SAFETY = 5, NAV_ABOUT = 6;
     private int page = NAV_CONTROL;
 
     // Remote control and job log
@@ -222,7 +227,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private JobLog jobLog;
     private JobLog.Job currentJob;
     private String jobSource = "tablet";       // who started the running job
+    private boolean dryRun;                    // the running job is a dry run: see dryLine()
     private String holdSource = "tablet";      // who pressed Hold last
+    private String lastAlarmMsg;               // last "[MSG: … limit exceeded …]" line, the reason for the next ALARM
     private String endResult, endDetail;       // why the running job is about to end (set before finishRun(false))
     private long etaSec = -1;
     private long lastPublishMs;
@@ -303,6 +310,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         chipCamera.setOnClickListener(v -> openSettings(SEC_CAMERA));
         pageControl = findViewById(R.id.pageControl);
         pageSettings = findViewById(R.id.pageSettings);
+        pageSafety = findViewById(R.id.pageSafety);
         buildNavRail();
         chipCloud.setOnClickListener(v -> openSettings(SEC_DEBUG));
         chipRemote.setOnClickListener(v -> openSettings(SEC_GENERAL));
@@ -332,8 +340,12 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         findViewById(R.id.btnHomeY).setOnClickListener(v -> home("Y"));
         findViewById(R.id.btnHomeZ).setOnClickListener(v -> home("Z"));
         findViewById(R.id.btnReset).setOnClickListener(v -> softReset());
-        findViewById(R.id.btnZeroXY).setOnClickListener(v -> queueCommand("G10L20P1X0Y0"));
-        findViewById(R.id.btnZeroZ).setOnClickListener(v -> queueCommand("G10L20P1Z0"));
+        findViewById(R.id.btnZeroXY).setOnClickListener(v -> { grblSettings.remove("G54"); queueCommand("G10L20P1X0Y0"); });
+        findViewById(R.id.btnZeroZ).setOnClickListener(v -> {
+            grblSettings.remove("G54");
+            if (port != null) getPreferences(MODE_PRIVATE).edit().putLong("z0SetAt", System.currentTimeMillis()).apply();
+            queueCommand("G10L20P1Z0");
+        });
         findViewById(R.id.btnGoZero).setOnClickListener(v -> queueCommand("G90G0X0Y0"));
         findViewById(R.id.btnSettings).setOnClickListener(v -> { showConsole(true); queueCommand("$$"); });
 
@@ -344,6 +356,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         findViewById(R.id.jZp).setOnClickListener(v -> jog("Z", 1));
         findViewById(R.id.jZm).setOnClickListener(v -> jog("Z", -1));
         findViewById(R.id.jStop).setOnClickListener(v -> writeRaw(new byte[]{(byte) 0x85})); // jog cancel
+        // speed is set on the MK300 panel; S1000 = 100 % in FluidNC's speed_map (same as circle_d100.nc)
+        findViewById(R.id.jSpindle).setOnClickListener(v -> queueCommand(spindleDir.isEmpty() ? "M3 S1000" : "M5"));
 
         findViewById(R.id.btnNew).setOnClickListener(v -> confirmDiscard(this::newDocument));
         findViewById(R.id.btnOpen).setOnClickListener(v -> OpenDialog.show(this, filesHost));
@@ -352,6 +366,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         findViewById(R.id.btnClose).setOnClickListener(v -> confirmDiscard(this::closeDocument));
         btnLoad.setOnClickListener(v -> load(null));
         btnRun.setOnClickListener(v -> run());
+        findViewById(R.id.btnDryRun).setOnClickListener(v -> dryRunClick());
         findViewById(R.id.btnHold).setOnClickListener(v -> feedHold("tablet"));
         findViewById(R.id.btnResume).setOnClickListener(v -> writeRaw(new byte[]{'~'}));
         findViewById(R.id.btnStop).setOnClickListener(v -> stopJob());
@@ -502,6 +517,37 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             queueCommand("G90G0X0Y0");
             queueCommand("G0Z0");
         }
+    }
+
+    /** Job setup: rapids to the plywood corners (1220 × 2440 sheet at the G54 origin) to check the sheet fits. */
+    private void showJobSetup() {
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        int pad = Ui.dp(this, 20);
+        body.setPadding(pad, Ui.dp(this, 8), pad, 0);
+        body.addView(Ui.text(this, "Plywood boundary test (G54 work coordinates). Below Z5 the spindle lifts to Z5 "
+                + "first; X/Y then move at the current height.", 14, Ui.TEXT));
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle("Job setup")
+                .setView(body)
+                .setPositiveButton("Close", null)
+                .create();
+        for (float[] xy : new float[][]{{0, 0}, {1220, 0}, {1220, 2440}, {0, 2440}}) {
+            Button b = Ui.button(this, String.format(Locale.US, "Goto (%.0f, %.0f)", xy[0], xy[1]), 1);
+            b.setOnClickListener(v -> gotoXY(xy[0], xy[1]));
+            body.addView(b, Ui.margins(this, 0, 12, 0, 0));
+        }
+        d.show();
+    }
+
+    /** Rapids to work X/Y in G54, lifting to Z5 first when the tool is lower (or below the sheet surface). */
+    private void gotoXY(float x, float y) {
+        if (machineState.startsWith("Alarm")) { log("Grbl is in ALARM – unlock ($X) or home first"); return; }
+        if (streaming) { log("A job is running"); return; }
+        log(String.format(Locale.US, "Goto X%.0f Y%.0f (G54)", x, y));
+        queueCommand("G54");
+        if (wposKnown && wpos[2] < 5) queueCommand("G90G0Z5");
+        queueCommand(String.format(Locale.US, "G90G0X%.3fY%.3f", x, y));
     }
 
     /** Sends a file to FluidNC's local filesystem with $Xmodem/Receive=<name> (e.g. a new config.yaml). */
@@ -761,6 +807,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         btnConnect.setEnabled(true);
         port = link;
         resetStreamState();
+        homedAxes = "";
+        pendingHome = null;
+        connectedAtMs = System.currentTimeMillis();
         log("Connected: " + describe(driver) + " @ " + baud + (ch340 ? " (built-in CH340 driver)" : ""));
         rxLimit = 127;
         fwVersion = null;
@@ -957,6 +1006,9 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             ui.removeCallbacks(reparse);
             ui.postDelayed(reparse, 600);
         }
+        if (line.startsWith("[MSG:") && line.contains("limit exceeded")) lastAlarmMsg = line;
+        if (line.startsWith("ALARM")) { homedAxes = ""; pendingHome = null; }
+        if (line.startsWith("ALARM") && streaming) alarmStop(line);
         if (line.startsWith("Grbl ")) {
             // Banner after reset: everything outstanding was discarded
             if (streaming) {
@@ -1174,6 +1226,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         String[] fields = body.split("\\|");
         String prevState = machineState;
         machineState = fields[0];
+        if (prevState.startsWith("Home") && !machineState.startsWith("Home") && pendingHome != null) {
+            if (!machineState.startsWith("Alarm")) for (char a : pendingHome.toCharArray()) if (homedAxes.indexOf(a) < 0) homedAxes += a;
+            pendingHome = null;
+        }
         boolean haveWpos = false;
         float[] w = new float[4];
         String pins = "";                      // Grbl leaves Pn: out when no input is active
@@ -1200,6 +1256,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             }
         }
         if (haveOv || !acc.isEmpty()) spindleDir = acc.contains("S") ? "S" : acc.contains("C") ? "C" : "";
+        showSpindleBtn();
         pinState = pins;
         if (haveOv) { showFeedOv(); checkFeedOv(); }
         if (haveWpos) {
@@ -1211,8 +1268,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         System.arraycopy(w, 0, wpos, 0, 4);
         wposKnown = true;
 
-        txtPos.setText(dro(w));
-        txtMPos.setText(String.format(Locale.US, "MPos %.3f, %.3f, %.3f", mpos[0], mpos[1], mpos[2]));
+        txtPos.setText(dro(w, mpos));
+        txtMPos.setText(String.format(Locale.US, "G54 offset %.3f, %.3f, %.3f", wco[0], wco[1], wco[2]));
         showHomeSensors(pins);
         showFeed();
         txtState.setText(machineState + (streaming ? "  ▶" : ""));
@@ -1259,7 +1316,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 line = manualQueue.peek();
                 fromProgram = false;
             } else if (streaming && nextLine < program.size()) {
-                line = program.get(nextLine).text;
+                line = dryRun ? dryLine(program.get(nextLine).text) : program.get(nextLine).text;
                 fromProgram = true;
             } else {
                 break;
@@ -1394,6 +1451,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             log(m);
             android.widget.Toast.makeText(this, m, android.widget.Toast.LENGTH_LONG).show();
         }
+        pendingHome = axis.isEmpty() ? "XYZ" : axis;
         queueCommand("$H" + axis);
     }
 
@@ -1449,11 +1507,14 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         btnLoad.setEnabled(false);
         worker.execute(() -> {
             GCodeParser.Result r = GCodeParser.parse(text, sx, sy, sz, rr);
+            String hash = RemoteControl.sha256(text);
             ui.post(() -> {
                 btnLoad.setEnabled(true);
                 if (seq != parseSeq) return;
                 job = r;
                 jobText = text;
+                jobHash = hash;
+                if (remote != null) remote.setProgram(hash, docName, text);
                 program.clear();
                 program.addAll(r.lines);
                 nextLine = 0;
@@ -1479,10 +1540,66 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         if (streaming) return;
         if (machineState.startsWith("Alarm")) { log("Grbl is in ALARM – unlock ($X) or home first"); return; }
         // Always rebuild the job from the current text and position (G91 programs depend on it)
-        load(this::confirmRun);
+        load(() -> confirmRun(false));
     }
 
-    private void confirmRun() {
+    private void dryRunClick() {
+        if (port == null) { log("Not connected"); return; }
+        if (streaming) return;
+        if (machineState.startsWith("Alarm")) { log("Grbl is in ALARM – unlock ($X) or home first"); return; }
+        load(() -> {
+            String why = dryRunProblem();
+            if (why != null) { log("Dry run not possible: " + why); return; }
+            confirmRun(true);
+        });
+    }
+
+    // Dry run: X/Y only. Z words, spindle (M3/M4/M5, S), dwells (G4) and M0/M1 pauses are taken out of each
+    // line as it is sent; a line left empty still goes out, so Grbl's "ok" keeps the line count in step.
+    private static final java.util.regex.Pattern DRY_WORDS =
+            java.util.regex.Pattern.compile("Z[-+]?[.0-9]+|M0*[01345](?![0-9])|S[.0-9]+");
+    private static final java.util.regex.Pattern DRY_DWELL = java.util.regex.Pattern.compile("G0*4(?![0-9])");
+    private static final java.util.regex.Pattern DRY_UNSAFE =
+            java.util.regex.Pattern.compile("G(28|30|38\\.[2-5]|7[36]|8[1-9]|0*18|0*19)(?![0-9])");
+
+    static String dryLine(String line) {
+        if (line.startsWith("$") || DRY_DWELL.matcher(line).find()) return "";
+        return DRY_WORDS.matcher(line).replaceAll("");
+    }
+
+    /** Why the loaded program cannot be dry run (moves Z in a way removing Z words does not stop), or null. */
+    private String dryRunProblem() {
+        for (GCodeParser.Line l : program) {
+            java.util.regex.Matcher m = DRY_UNSAFE.matcher(l.text);
+            if (m.find()) {
+                return "line " + (l.editorLine + 1) + " (" + l.text + ") uses " + m.group()
+                        + ", which can move Z (G28/G30 return, probing, drill cycle or an XZ/YZ arc plane)";
+            }
+        }
+        return null;
+    }
+
+    /** Run: red safety findings or an unticked checklist ask first (Safety check page / Run anyway). */
+    private void confirmRun(boolean dry) {
+        if (job == null || program.isEmpty()) return;
+        java.util.List<String> problems = dry ? java.util.Collections.emptyList() : SafetyCheck.problems(this, safetyHost());
+        if (problems.isEmpty()) { showRunConfirm(dry); return; }
+        StringBuilder sb = new StringBuilder();
+        for (String p : problems) sb.append("✖ ").append(p).append("\n\n");
+        RemoteLog.w("safety", "Run with " + problems.size() + " open safety item(s): " + String.join(" | ", problems));
+        new AlertDialog.Builder(this)
+                .setTitle("Safety check: " + problems.size() + " open item" + (problems.size() == 1 ? "" : "s"))
+                .setMessage(sb.toString().trim())
+                .setPositiveButton("Safety check", (d, w) -> showPage(NAV_SAFETY))
+                .setNegativeButton("Cancel", null)
+                .setNeutralButton("Run anyway", (d, w) -> {
+                    log("⚠ Run started with " + problems.size() + " open safety item(s)");
+                    showRunConfirm(dry);
+                })
+                .show();
+    }
+
+    private void showRunConfirm(boolean dry) {
         if (job == null || program.isEmpty()) return;
         long sec = Math.round(job.estSeconds);
         String ends = new java.text.SimpleDateFormat("HH:mm", Locale.US)
@@ -1496,13 +1613,14 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         new AlertDialog.Builder(this)
                 .setTitle("Run program?")
                 .setMessage(msg)
-                .setPositiveButton("Run", (d, w) -> startJob())
+                .setPositiveButton(dry ? "Dry run" : "Run", (d, w) -> startJob(dry))
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
-    private void startJob() {
+    private void startJob(boolean dry) {
         if (port == null || program.isEmpty() || streaming) return;
+        dryRun = dry;
         nextLine = 0;
         ackedLines = 0;
         errorCount = 0;
@@ -1520,14 +1638,30 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         showConsole(false);
         preview.setRunning(true);
         preview.setDoneLine(-1);
-        log("Run started: " + (docName != null ? docName : "untitled") + (jobSource.equals("tablet") ? "" : " (from the " + jobSource + ")"));
+        log((dry ? "Dry run started: " : "Run started: ") + (docName != null ? docName : "untitled")
+                + (jobSource.equals("tablet") ? "" : " (from the " + jobSource + ")"));
+        if (dry) log("ℹ Dry run: X/Y only – Z stays at " + String.format(Locale.US, "%.3f", wpos[2])
+                + ", no spindle, no dwells, no M0 pauses");
         endResult = null;
         endDetail = null;
         etaSec = -1;
+        if (!dry) {
+            // for the safety check: holes and profile files must share G54 X/Y; a new bit needs a new Z0
+            float[] g = SafetyCheck.parseXYZ(grblSettings.get("G54"));
+            if (g == null) g = wco;
+            getPreferences(MODE_PRIVATE).edit()
+                    .putString("lastRunG54", String.format(Locale.US, "%.3f,%.3f,%.3f", g[0], g[1], g[2]))
+                    .putString("lastRunFile", docName != null ? docName : "untitled")
+                    .putLong("lastRunAt", System.currentTimeMillis())
+                    .putFloat("lastRunTool", job != null && job.toolFromFile ? job.toolDiameter : 0)
+                    .apply();
+            SafetyCheck.clearChecklist();
+        }
         currentJob = jobLog.start(docName != null ? docName : "untitled", program.size(),
                 job != null ? Math.round(job.estSeconds) : 0, jobSource);
+        if (dry) jobLog.event(currentJob, "dry run", 0, "X/Y only: Z, spindle, dwells and M0 skipped");
         if (jobsSection != null) jobsSection.refresh();
-        JobService.start(this, "Running " + (docName != null ? docName : "untitled"));
+        JobService.start(this, (dry ? "Dry run " : "Running ") + (docName != null ? docName : "untitled"));
         updateButtons();
         updateChips();
         publishStatus(true);
@@ -1541,6 +1675,27 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     }
 
     private void stopJob() { stopJob("tablet"); }
+
+    /**
+     * ALARM while streaming: the controller has dropped its planner and rejects every further line
+     * (FluidNC says "Reset to continue"), so end the job instead of leaving it in Hold, where the
+     * next line being M0 would show the "press Resume" dialog. The soft reset clears the alarm
+     * message state; the job log and the backoffice get the reason.
+     */
+    private void alarmStop(String alarm) {
+        String why = alarm + (lastAlarmMsg != null ? " – " + lastAlarmMsg.replaceAll("^\\[MSG:(INFO: )?|\\]$", "") : "");
+        endResult = "alarm";
+        endDetail = why;
+        final int at = ackedLines;
+        log("!! " + why + " – job stopped at line " + at + "/" + program.size());
+        if (lastAlarmMsg != null && lastAlarmMsg.contains("Soft limit exceeded on Z") && lastAlarmMsg.contains("target")) {
+            log("ℹ The program moved Z outside the machine's travel: work Z0 is probably not set on top of the stock. "
+                    + "Jog the tool down to the stock top and press Zero Z, then run again.");
+        }
+        lastAlarmMsg = null;
+        ui.postDelayed(this::softReset, 300);
+        finishRun(false);
+    }
 
     private void stopJob(String who) {
         if (!streaming) { softReset(); return; }
@@ -1579,6 +1734,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         currentJob = null;
         if (jobsSection != null) jobsSection.refresh();
         jobSource = "tablet";
+        dryRun = false;
         endResult = null;
         endDetail = null;
         etaSec = -1;
@@ -1613,7 +1769,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void checkProgramPause() {
         boolean held = machineState.startsWith("Hold");
         int idx = ackedLines;
-        boolean atPause = held && idx < program.size() && M0_WORD.matcher(program.get(idx).text).find();
+        boolean atPause = held && !dryRun && idx < program.size() && M0_WORD.matcher(program.get(idx).text).find();
         if (atPause && pauseLine != idx) {
             pauseLine = idx;
             String why = pauseComment(program.get(idx).editorLine);
@@ -1819,6 +1975,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void afterDocumentChange() {
         job = null;
         jobText = null;
+        jobHash = null;
+        if (remote != null) remote.setProgram(null, null, null);
         program.clear();
         progress.setProgress(0);
         txtJob.setText("Not loaded");
@@ -2813,8 +2971,8 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     private void buildNavRail() {
         LinearLayout rail = findViewById(R.id.navRail);
-        String[] icons = {"control", "settings", "wiring", "setup", "about"};
-        String[] labels = {"Control", "Settings", "Wiring", "CNC setup", "About"};
+        String[] icons = {"control", "settings", "wiring", "setup", "job", "safety", "about"};
+        String[] labels = {"Control", "Settings", "Wiring", "CNC setup", "Job setup", "Safety check", "About"};
         for (int i = 0; i < icons.length; i++) {
             if (i == NAV_ABOUT) rail.addView(new View(this), new LinearLayout.LayoutParams(1, 0, 1f));
             LinearLayout item = Ui.navItem(this, icons[i], labels[i], true);
@@ -2829,11 +2987,15 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     private void showPage(int p) {
         if (p == NAV_WIRING) { setupPages().showWiring(); return; }
         if (p == NAV_SETUP) { setupPages().showCncSetup(); return; }
+        if (p == NAV_JOB) { showJobSetup(); return; }
         if (p == NAV_ABOUT) { showAbout(); return; }
         page = p;
         for (int i = 0; i < navItems.length; i++) Ui.setNavSelected(navItems[i], i == p);
         pageControl.setVisibility(p == NAV_CONTROL ? View.VISIBLE : View.GONE);
         pageSettings.setVisibility(p == NAV_SETTINGS ? View.VISIBLE : View.GONE);
+        pageSafety.setVisibility(p == NAV_SAFETY ? View.VISIBLE : View.GONE);
+        pageSafety.removeAllViews();
+        if (p == NAV_SAFETY) pageSafety.addView(new SafetyCheck(this, safetyHost()).build());
         if (p == NAV_SETTINGS) {
             buildSettingsShell();
             if (section < 0) showSection(SEC_GENERAL, null);
@@ -2843,6 +3005,61 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             if (focus != null) ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
                     .hideSoftInputFromWindow(focus.getWindowToken(), 0);
         }
+    }
+
+    private SafetyCheck.Host safetyHost() {
+        return new SafetyCheck.Host() {
+            @Override public String text() { return docText(); }
+            @Override public String fileName() { return docName; }
+            @Override public boolean fluidnc() { return BOARD_FLUIDNC.equals(board()); }
+            @Override public boolean connected() { return port != null; }
+            @Override public String machineState() { return machineState; }
+            @Override public boolean streaming() { return streaming; }
+            @Override public java.util.Map<String, String> grblSettings() { return grblSettings; }
+            @Override public float[] wco() { return wco; }
+            @Override public String homedAxes() { return homedAxes; }
+            @Override public long connectedAt() { return port != null ? connectedAtMs : 0; }
+            @Override public android.content.SharedPreferences prefs() { return getPreferences(MODE_PRIVATE); }
+            @Override public void capture(String cmd, SetupPages.Lines done) { captureCommand(cmd, done); }
+            @Override public void saveCopy(String name, String text, String note) { saveSafetyCopy(name, text, note); }
+            @Override public String readLocal(String name) {
+                for (FilesSection.LocalFile f : FilesSection.listLocal(MainActivity.this)) {
+                    if (!f.name.equals(name)) continue;
+                    try (InputStream in = getContentResolver().openInputStream(f.uri)) {
+                        return in == null ? null : new String(readBytes(in), StandardCharsets.UTF_8);
+                    } catch (Exception e) {
+                        RemoteLog.e("safety", "read " + name, e);
+                        return null;
+                    }
+                }
+                return null;
+            }
+        };
+    }
+
+    /** Safety check → Update G-code: save the depth-limited copy next to the other programs, then offer to open it. */
+    private void saveSafetyCopy(String name, String text, String note) {
+        new Thread(() -> {
+            try {
+                Uri uri = saveLocalFile(name, text.getBytes(StandardCharsets.UTF_8));
+                ui.post(() -> {
+                    log("Saved Documents/" + SAMPLE_DIR + "/" + name + " – " + note);
+                    new AlertDialog.Builder(this)
+                            .setTitle("Saved " + name)
+                            .setMessage("Documents/" + SAMPLE_DIR + "/" + name + "\n\n" + note
+                                    + "\n\nOpen it now and run the safety check on it?")
+                            .setPositiveButton("Open", (d, w) -> confirmDiscard(() -> {
+                                if (loadDocument(uri, true)) showPage(NAV_SAFETY);
+                            }))
+                            .setNegativeButton("Later", null)
+                            .show();
+                });
+            } catch (Exception e) {
+                RemoteLog.e("safety", "save " + name, e);
+                ui.post(() -> android.widget.Toast.makeText(this, "Could not save " + name + ": " + e.getMessage(),
+                        android.widget.Toast.LENGTH_LONG).show());
+            }
+        }, "safety-save").start();
     }
 
     private void openSettings(int sec) {
@@ -3015,17 +3232,28 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     }
 
     /** Big work-position readout with coloured axis letters. */
-    private static CharSequence dro(float[] w) {
+    /** Work (G54) position large, machine position small in a second column after "M". */
+    /** Two columns: MCS = machine position, WCS = work position (MCS minus the G54 offset). */
+    private static CharSequence dro(float[] w, float[] m) {
         android.text.SpannableStringBuilder b = new android.text.SpannableStringBuilder();
+        int s = b.length();
+        b.append("          MCS           WCS");   // at 0.75 size: right edges line up with the 9 / 10-wide columns below
+        b.setSpan(new android.text.style.ForegroundColorSpan(Ui.MUTED), s, b.length(), 0);
+        b.setSpan(new android.text.style.RelativeSizeSpan(0.75f), s, b.length(), 0);
         String[] ax = {"X", "Y", "Z"};
         int[] colors = {Ui.AX_X, Ui.AX_Y, Ui.AX_Z};
         for (int i = 0; i < 3; i++) {
-            if (i > 0) b.append('\n');
-            int s = b.length();
+            b.append('\n');
+            s = b.length();
             b.append(ax[i]);
             b.setSpan(new android.text.style.ForegroundColorSpan(colors[i]), s, b.length(), 0);
             b.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), s, b.length(), 0);
-            b.append(String.format(Locale.US, " %9.3f", w[i]));
+            s = b.length();
+            b.append(String.format(Locale.US, "%9.2f", m[i]));
+            b.setSpan(new android.text.style.ForegroundColorSpan(Ui.MUTED), s, b.length(), 0);
+            s = b.length();
+            b.append(String.format(Locale.US, "%10.3f", w[i]));
+            b.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), s, b.length(), 0);
         }
         return b;
     }
@@ -3046,6 +3274,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     .put("wpos", new org.json.JSONArray().put(wpos[0]).put(wpos[1]).put(wpos[2]))
                     .put("mpos", new org.json.JSONArray().put(mpos[0]).put(mpos[1]).put(mpos[2]))
                     .put("streaming", streaming)
+                    .put("dryRun", streaming && dryRun)
                     .put("paused", holdSinceMs != 0)
                     .put("file", docName)
                     .put("dirty", dirty)
@@ -3057,6 +3286,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     .put("estSec", job != null ? Math.round(job.estSeconds) : 0)
                     .put("errors", errorCount)
                     .put("jobId", currentJob != null ? currentJob.id : null)
+                    .put("progHash", job != null ? jobHash : null)
                     .put("fw", fwVersion)
                     .put("remoteControl", remoteControlAllowed())
                     .put("app", BuildConfig.VERSION_NAME);
@@ -3142,10 +3372,17 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 queueCommand("$X");
                 r.done(true, "$X sent");
                 return;
-            case "home":
-                queueCommand("$H");
-                r.done(true, "$H sent – homing");
+            case "home": {
+                String axis = c.optString("axes", "").toUpperCase(Locale.US);
+                if (!axis.matches("[XYZ]?")) { r.done(false, "axes must be X, Y or Z (empty = home all)"); return; }
+                if (!axis.isEmpty() && !boardIsFluid()) {
+                    r.done(false, "single-axis homing needs FluidNC – the " + boardName(board()) + " only homes all axes");
+                    return;
+                }
+                queueCommand("$H" + axis);
+                r.done(true, "$H" + axis + " sent – homing " + (axis.isEmpty() ? "all axes" : axis));
                 return;
+            }
             case "zero": {
                 String axes = c.optString("axes", "XY").toUpperCase(Locale.US);
                 StringBuilder g = new StringBuilder("G10L20P1");
@@ -3173,8 +3410,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 return;
             }
             case "load":
-            case "run": {
-                boolean run = cmd.equals("run");
+            case "run":
+            case "dryrun": {
+                boolean dry = cmd.equals("dryrun");
+                boolean run = cmd.equals("run") || dry;
                 if (run && machineState.startsWith("Alarm")) { r.done(false, "Grbl is in ALARM – unlock ($X) or home first"); return; }
                 String file = c.optString("file", "").trim();
                 Runnable parse = () -> {
@@ -3185,9 +3424,11 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                                 + hms(Math.round(job.estSeconds));
                         if (!run) { r.done(true, "loaded " + what); return; }
                         if (port == null || streaming) { r.done(false, port == null ? "not connected" : "already running"); return; }
+                        String why = dry ? dryRunProblem() : null;
+                        if (why != null) { r.done(false, "dry run not possible: " + why); return; }
                         jobSource = "backoffice";
-                        startJob();
-                        r.done(true, "started " + what);
+                        startJob(dry);
+                        r.done(true, (dry ? "dry run (X/Y only, Z stays at " + String.format(Locale.US, "%.3f", wpos[2]) + ") started " : "started ") + what);
                     });
                 };
                 if (file.isEmpty()) { parse.run(); return; }
@@ -3203,7 +3444,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     interface ErrorCallback { void onError(String msg); }
 
     /** Download a G-code file from the backoffice, save it to Documents/GrblSender and open it in the editor. */
+    private int remoteOpenGen;                 // bumped by each remoteOpen(): only the newest download opens its file
+
     private void remoteOpen(String name, Runnable onOpened, ErrorCallback onError) {
+        final int gen = ++remoteOpenGen;
         log("Downloading " + name + " from the backoffice…");
         // own thread, not the worker: a long preview parse there would hold the download back for minutes
         new Thread(() -> {
@@ -3212,6 +3456,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                 Uri uri = saveLocalFile(name, data);
                 DebugLog.srv("Downloaded " + name + " (" + data.length + " bytes) to Documents/" + SAMPLE_DIR);
                 ui.post(() -> {
+                    if (gen != remoteOpenGen) { onError.onError("replaced by a newer load / run of the backoffice"); return; }
                     if (streaming) { onError.onError("a job started meanwhile"); return; }
                     if (loadDocument(uri, true)) onOpened.run();
                     else onError.onError("downloaded, but the file could not be opened");
@@ -3270,6 +3515,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             @Override public void estop() { log("E-STOP (CNC setup)"); softReset(); }
             @Override public void hold() { feedHold("tablet"); }
             @Override public void resume() { writeRaw(new byte[]{'~'}); log(">> ~ (resume)"); }
+            @Override public float[] machinePos() { return mpos.clone(); }
             @Override public String machineStatus() {
                 return String.format(Locale.US, "State: %s   MPos X %.3f  Y %.3f  Z %.3f%s", machineState.isEmpty() ? "–" : machineState,
                         mpos[0], mpos[1], mpos[2], pinState.isEmpty() ? "" : "   active inputs: " + pinState);
@@ -3821,7 +4067,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
     @Override
     public void onBackPressed() {
         if (fullScreen) { setFullScreen(false); return; }
-        if (page == NAV_SETTINGS) { showPage(NAV_CONTROL); return; }
+        if (page == NAV_SETTINGS || page == NAV_SAFETY) { showPage(NAV_CONTROL); return; }
         super.onBackPressed();
     }
 
@@ -3946,8 +4192,20 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         setLive(R.id.btnResume, connected);
         setLive(R.id.btnStop, connected || streaming);
         setLive(R.id.btnRun, btnRun.isEnabled());
+        findViewById(R.id.btnDryRun).setEnabled(btnRun.isEnabled());
+        setLive(R.id.btnDryRun, btnRun.isEnabled());
         setLive(R.id.btnLoad, btnLoad.isEnabled());
+        showSpindleBtn();
         publishStatus(true);
+    }
+
+    /** Jog-panel spindle toggle: only while connected, Idle and no program streaming; label is the next action. */
+    private void showSpindleBtn() {
+        Button b = findViewById(R.id.jSpindle);
+        boolean on = !spindleDir.isEmpty();
+        b.setText(on ? "Spindle\nOFF" : "Spindle\nON");
+        b.setTextColor(on ? 0xFFFF5555 : 0xFF66DD66);
+        setLive(R.id.jSpindle, port != null && !streaming && machineState.equals("Idle"));
     }
 
     private void log(String msg) {

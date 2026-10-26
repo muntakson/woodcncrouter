@@ -50,6 +50,8 @@ final class SetupPages {
         void home(String axis);
         /** Grbl state ("Idle", "Home", "Alarm:…") and machine position, for the live line under the home buttons. */
         String machineStatus();
+        /** Last machine position (MPos) from the status report: X, Y, Z, A. */
+        float[] machinePos();
         /** Soft reset (Ctrl-X): stops all motion at once, also a homing cycle. */
         void estop();
         /** Feed hold (!) / cycle resume (~). */
@@ -880,6 +882,7 @@ final class SetupPages {
         h("Work offset G54");
         p("G54 is the work zero that G-code jobs use: the machine position (after homing) where X0 Y0 Z0 of the job lies. "
                 + "\"Write G54\" sends G10 L2 P1 with these values; the controller keeps them through power-off. "
+                + "\"Set G54\" makes the current machine position the work zero (WCS 0, 0, 0). "
                 + "The Zero XY / Zero Z buttons on the Control page overwrite G54 with the current position.");
         EditText[] g54 = {
                 field(row(), "G54 X (mm, machine)", "cnc_g54_x", "500"),
@@ -905,9 +908,10 @@ final class SetupPages {
                     : host.connected() ? "Press \"Read G54\" to see the value in the controller." : "Connect to read G54 from the controller.");
         };
         LinearLayout g54Row = row();
-        Button g54Read = button("Read G54"), g54Write = button("Write G54");
+        Button g54Read = button("Read G54"), g54Write = button("Write G54"), g54Set = button("Set G54");
         g54Write.setTextColor(GOOD);
-        for (Button b : new Button[]{g54Read, g54Write}) {
+        g54Set.setTextColor(GOOD);
+        for (Button b : new Button[]{g54Read, g54Write, g54Set}) {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(56), 1);
             lp.rightMargin = px(6);
             g54Row.addView(b, lp);
@@ -937,6 +941,31 @@ final class SetupPages {
                         } else {
                             host.log("CNC setup: G54 written (" + cmd + ")");
                             toast("G54 written");
+                        }
+                        g54Query.run();
+                    })))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        g54Set.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Connect to the board first"); return; }
+            if (host.busy()) { toast("Stop the running job before changing G54"); return; }
+            if (!host.machineStatus().startsWith("State: Idle")) { toast("Grbl must be Idle – unlock ($X) or home first"); return; }
+            float[] m = host.machinePos();
+            String x = fmt(round3(m[0])), y = fmt(round3(m[1])), z = fmt(round3(m[2]));
+            String cmd = "G10L2P1X" + x + "Y" + y + "Z" + z;
+            new android.app.AlertDialog.Builder(a)
+                    .setTitle("Set G54 to the current position?")
+                    .setMessage("Machine position now: X " + x + "  Y " + y + "  Z " + z + "\n\n" + cmd
+                            + "\n\nThis point becomes the work zero: WCS shows 0, 0, 0 here and jobs start from it.")
+                    .setPositiveButton("Set G54", (dlg, which) -> host.capture(cmd, lines -> g54Now.post(() -> {
+                        if (lines == null) {
+                            host.log("CNC setup: G54 NOT set (" + cmd + ") – the controller refused it or was busy");
+                            toast("G54 not set – unlock ($X) or home first, then try again");
+                        } else {
+                            g54[0].setText(x); g54[1].setText(y); g54[2].setText(z);
+                            host.log("CNC setup: G54 set to the current machine position (" + cmd + ")");
+                            toast("G54 set – WCS is now 0, 0, 0 here");
                         }
                         g54Query.run();
                     })))

@@ -199,6 +199,17 @@ final class Ui {
                     c.drawPath(path, p);
                     line(c, 3, 22, 21, 22);
                     break;
+                case "safety":    // shield with a check mark
+                    path.moveTo(12, 2.5f); path.lineTo(20, 5.5f); path.lineTo(20, 11.5f);
+                    path.cubicTo(20, 16.5f, 16.5f, 20, 12, 21.5f);
+                    path.cubicTo(7.5f, 20, 4, 16.5f, 4, 11.5f); path.lineTo(4, 5.5f); path.close();
+                    c.drawPath(path, p);
+                    line(c, 8.5f, 12, 11, 14.5f); line(c, 11, 14.5f, 15.5f, 9.5f);
+                    break;
+                case "job":       // plywood sheet with corner marks
+                    c.drawRect(new RectF(6, 2.5f, 18, 21.5f), p);
+                    fillCircle(c, 6, 21.5f, 2); fillCircle(c, 18, 21.5f, 2); fillCircle(c, 6, 2.5f, 2);
+                    break;
                 case "about":
                     c.drawCircle(12, 12, 9, p);
                     line(c, 12, 11, 12, 16.5f);

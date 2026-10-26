@@ -30,6 +30,13 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const GCODE_DIR = path.join(__dirname, 'gcode');
 const FIRMWARE_DIR = path.join(__dirname, 'firmware');
 const DXF_DIR = path.join(__dirname, 'dxf');
+// Programs the tablets are running, shared by the tablet itself and stored under their SHA-256, so
+// the dashboard draws exactly what is being cut (not a backoffice file that only has the same name)
+const PROGRAM_DIR = path.join(__dirname, 'data', 'programs');
+const PROG_HASH = /^[0-9a-f]{64}$/;
+const PROGRAMS_KEPT = 100;
+const programFile = (h) => path.join(PROGRAM_DIR, h + '.nc');
+const GCODE_NAME = /^[\w.\- ()]+\.(nc|gcode|ngc|tap)$/i;
 const DXF_NAME = /^[\w.\- ()]+\.dxf$/i;
 const MAX_LOG_ROWS = 200000;
 // Bearer token for the remote-control HTTP API (scripts, other servers); the dashboard login works too
@@ -157,7 +164,7 @@ function clientIp(req) {
 const ONLINE_MS = 10000;
 const COMMAND_TTL_MS = 30000;        // a queued command not picked up by then is dropped (never run stale)
 const CONSOLE_MAX = 1000;
-const CONTROL_CMDS = new Set(['run', 'resume', 'load', 'send', 'unlock', 'home', 'reset', 'zero']);
+const CONTROL_CMDS = new Set(['run', 'dryrun', 'resume', 'load', 'send', 'unlock', 'home', 'reset', 'zero']);
 const ALL_CMDS = new Set([...CONTROL_CMDS, 'hold', 'stop', 'status']);
 const cnc = new Map();               // device id -> { status, seen, console: [], seq, queue: [], waiter }
 const commands = new Map();          // command id -> command record (kept 1 h)
@@ -325,6 +332,17 @@ function serveFile(res, file, extraHeaders = {}) {
     });
     fs.createReadStream(file).pipe(res);
   });
+}
+
+function pruneProgramsDir() {
+  const files = fs.readdirSync(PROGRAM_DIR).filter((f) => f.endsWith('.nc'))
+    .map((f) => ({ f, t: fs.statSync(path.join(PROGRAM_DIR, f)).mtimeMs })).sort((a, b) => b.t - a.t);
+  for (const { f } of files.slice(PROGRAMS_KEPT)) {
+    for (const x of [f, f.replace(/\.nc$/, '.json')]) fs.rmSync(path.join(PROGRAM_DIR, x), { force: true });
+  }
+}
+function programMeta(h) {
+  try { return JSON.parse(fs.readFileSync(path.join(PROGRAM_DIR, h + '.json'), 'utf8')); } catch { return {}; }
 }
 
 // ---------------------------------------------------------------- DXF files + AI CAM
@@ -522,8 +540,9 @@ async function handle(req, res) {
       c.lastError = data.camera.error || null;
       if (c.focusReq && data.camera.focus?.id === c.focusReq.id) c.focusReq = null;   // the tablet applied it
     }
+    const ph = String(data.status?.progHash || '');
     return send(res, 200, { ok: true, commands: cmds, jobEventsStored: stored, serverTime: Date.now(),
-      camera: camReply(id) });
+      camera: camReply(id), program: PROG_HASH.test(ph) && !fs.existsSync(programFile(ph)) ? { want: ph } : null });
   }
 
   // ---- camera frames from the tablet (ingest key): one JPEG per request
@@ -544,6 +563,25 @@ async function handle(req, res) {
     return send(res, 200, camReply(id));
   }
 
+  // ---- the program the tablet has loaded (ingest key), sent once when the sync reply asks for it
+  if (req.method === 'POST' && p === '/api/device/program') {
+    if (!safeEqual(req.headers['x-ingest-key'] || '', INGEST_KEY)) return send(res, 401, { error: 'bad key' });
+    const id = String(req.headers['x-device-id'] || '');
+    const hash = String(req.headers['x-program-hash'] || '').toLowerCase();
+    if (!id) return send(res, 400, { error: 'X-Device-Id required' });
+    if (!PROG_HASH.test(hash)) return send(res, 400, { error: 'X-Program-Hash must be a SHA-256 hex digest' });
+    const body = await readBody(req, 50 * 1024 * 1024);
+    if (crypto.createHash('sha256').update(body).digest('hex') !== hash) return send(res, 400, { error: 'body does not match X-Program-Hash' });
+    let name = '';
+    try { name = path.basename(decodeURIComponent(String(req.headers['x-program-name'] || '').replace(/\+/g, ' '))).slice(0, 200); } catch { /* keep it unnamed */ }
+    fs.mkdirSync(PROGRAM_DIR, { recursive: true });
+    fs.writeFileSync(programFile(hash) + '.part', body);
+    fs.renameSync(programFile(hash) + '.part', programFile(hash));
+    fs.writeFileSync(path.join(PROGRAM_DIR, hash + '.json'), JSON.stringify({ name, device: id, size: body.length, at: Date.now() }));
+    pruneProgramsDir();
+    return send(res, 200, { ok: true, hash, size: body.length });
+  }
+
   // ---- remote-control API: dashboard login (LAN / Basic) or "Authorization: Bearer CNC_API_KEY"
   if (p.startsWith('/api/cnc') || (p === '/api/jobs' || p.startsWith('/api/jobs/')) || p === '/api/gcode/upload'
       || (req.method === 'DELETE' && p.startsWith('/api/gcode/')) || p === '/cnc') {
@@ -555,6 +593,28 @@ async function handle(req, res) {
 
     if (isGet && p === '/api/cnc') {
       return send(res, 200, [...cnc.keys()].map(cncSummary).sort((a, b) => b.lastSeen - a.lastSeen));
+    }
+    if (isGet && p === '/api/cnc/program') {          // a program a tablet shared, by its SHA-256
+      const h = String(url.searchParams.get('hash') || '').toLowerCase();
+      if (!PROG_HASH.test(h)) return send(res, 400, { error: 'hash must be a SHA-256 hex digest' });
+      const name = programMeta(h).name || h.slice(0, 12) + '.nc';
+      return serveFile(res, programFile(h), { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'private, max-age=31536000, immutable',
+        'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(name)}` });
+    }
+    if (req.method === 'POST' && p === '/api/cnc/program/save') {     // copy a shared program into NC files
+      let b;
+      try { b = JSON.parse((await readBody(req)).toString('utf8')); } catch { return send(res, 400, { error: 'bad json' }); }
+      const h = String(b.hash || '').toLowerCase(), name = path.basename(String(b.name || ''));
+      if (!PROG_HASH.test(h) || !fs.existsSync(programFile(h))) return send(res, 404, { error: 'the tablet has not shared that program' });
+      if (!GCODE_NAME.test(name)) return send(res, 400, { error: 'name must end in .nc, .gcode, .ngc or .tap (letters, digits, space, . - _ ( ) only)' });
+      const dest = path.join(GCODE_DIR, name), body = fs.readFileSync(programFile(h));
+      if (fs.existsSync(dest)) {
+        if (fs.readFileSync(dest).equals(body)) return send(res, 200, { ok: true, name, same: true });
+        if (!b.overwrite) return send(res, 409, { error: `${name} already exists in NC files with different content` });
+      }
+      fs.mkdirSync(GCODE_DIR, { recursive: true });
+      fs.writeFileSync(dest, body);
+      return send(res, 200, { ok: true, name, size: body.length });
     }
     if (isGet && p === '/api/cnc/status') {
       const id = pickDevice(url.searchParams.get('device'));
@@ -688,7 +748,7 @@ async function handle(req, res) {
     }
     if (req.method === 'POST' && p === '/api/gcode/upload') {
       const name = path.basename(url.searchParams.get('name') || '');
-      if (!/^[\w.\- ()]+\.(nc|gcode|ngc|tap)$/i.test(name)) return send(res, 400, { error: 'name must end in .nc, .gcode, .ngc or .tap' });
+      if (!GCODE_NAME.test(name)) return send(res, 400, { error: 'name must end in .nc, .gcode, .ngc or .tap' });
       const body = await readBody(req, 50 * 1024 * 1024);
       fs.mkdirSync(GCODE_DIR, { recursive: true });
       fs.writeFileSync(path.join(GCODE_DIR, name), body);
@@ -792,6 +852,9 @@ async function handle(req, res) {
 
   if (req.method === 'GET' && (p === '/app' || p === '/app/')) return serveFile(res, path.join(PUBLIC_DIR, 'app.html'));
   if (req.method === 'GET' && (p === '/app/api' || p === '/api/docs')) return serveFile(res, path.join(PUBLIC_DIR, 'api.html'));
+  if (isGet && /^\/app\/img\/[\w.-]+\.png$/.test(p)) {
+    return serveFile(res, path.join(PUBLIC_DIR, 'img', path.basename(p)), { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=3600' });
+  }
 
   // ---- AI CAM: DXF library, geometry for the viewer, Claude-planned toolpaths
   if (isGet && p === '/api/dxf') return send(res, 200, listDxf());
