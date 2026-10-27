@@ -30,9 +30,11 @@ p.add_argument("--through", type=float, default=0.5, help="extra depth into the 
 p.add_argument("--step", type=float, default=4.0, help="max depth per pass mm")
 p.add_argument("--feed", type=float, default=800, help="cutting feed mm/min")
 p.add_argument("--plunge", type=float, default=500, help="plunge feed mm/min (Grbl caps it at $112)")
-p.add_argument("--peck", type=float, default=6.0, help="retract to clear chips every N mm of hole depth (0 = one plunge)")
+p.add_argument("--peck", default="6", help="peck length mm, or a list like 15,16 (last one repeats); retract to clear chips after each (0 = one plunge)")
 p.add_argument("--hole-depth", type=float, default=None, help="hole depth below Z0 mm (default: stock + through)")
 p.add_argument("--safe", type=float, default=5.0, help="safe Z above the stack mm")
+p.add_argument("--hole-lift", type=float, default=None,
+               help="Z for hops between holes of the same part mm (default: --safe); moves between parts still lift to --safe")
 p.add_argument("--approach", type=float, default=5.0, help="rapid down to this Z, then feed into the stack (covers an uneven top) mm")
 p.add_argument("--spindle", choices=["vfd", "manual"], default="vfd",
                help="vfd: M3/M5 switch the MK300 via Grbl's spindle-enable pin (D13); manual: M0 pauses to switch by hand")
@@ -42,16 +44,31 @@ p.add_argument("--rpm", type=float, default=20000, help="spindle speed word for 
 p.add_argument("--tabs", type=int, default=0, help="full-height bridges per part outline (0 = none)")
 p.add_argument("--tab-width", type=float, default=5.0, help="wood left in each bridge mm")
 p.add_argument("--tab-min-seg", type=float, default=30.0, help="shortest straight side a bridge may sit on mm")
+p.add_argument("--add-tab", action="append", default=[], metavar="INSERT:X,Y",
+               help="with --tabs: one more bridge on part INSERT, at the clear spot nearest X,Y (repeatable)")
 p.add_argument("--spinup", type=float, default=10.0, help="dwell after M3 so the spindle reaches speed, s")
-p.add_argument("--rev", default="", help="version tag written into the header, e.g. \"v2 - safe Z30\"")
+p.add_argument("--holes-first", action="store_true",
+               help="with --ops all: every hole on the sheet first, then every outline (default: per part)")
+p.add_argument("--depth-first", action="store_true",
+               help="with --tabs: cut each side between two bridges to full depth (alternating direction) before hopping on, instead of lifting over every bridge on every pass")
+p.add_argument("--helix-pitch", type=float, default=2.0, help="Z drop per turn when a hole is milled as an inside contour mm")
+p.add_argument("--rev",default="", help="version tag written into the header, e.g. \"v2 - safe Z30\"")
 args = p.parse_args()
+args.rev = args.rev.replace("(", "").replace(")", "")   # Grbl comments cannot nest
 
 R = args.tool / 2
 DEPTH = args.stock + args.through
 NPASS = math.ceil(DEPTH / args.step - 1e-9)
 STEP = DEPTH / NPASS
+HOLE_LIFT = args.safe if args.hole_lift is None else args.hole_lift
+if not args.approach <= HOLE_LIFT <= args.safe:
+    raise SystemExit("--hole-lift must be between --approach and --safe")
 HOLE_DEPTH = args.hole_depth if args.hole_depth is not None else DEPTH
-PECK = args.peck if args.peck > 0 else HOLE_DEPTH
+PECKS = [float(v) for v in args.peck.split(",")]
+if PECKS == [0]:
+    PECKS = [HOLE_DEPTH]
+if min(PECKS) <= 0:
+    raise SystemExit("--peck: lengths must be > 0")
 
 sheet, parts, problems, _ = dxf_parts.load(args.dxf)
 if problems:
@@ -188,9 +205,10 @@ def fit_moves(pts):
 def start_index(pts, near):
     return min(range(len(pts)), key=lambda i: math.dist(pts[i], near))
 
-def tab_spots(pts, part):
+def tab_spots(pts, part, min_seg=None):
     """Clear bridge spots on the closed point list, one per long straight side: (seg, L, t centre, XY).
     A bridge must reach solid waste: no neighbour's slot and no stack edge within it."""
+    min_seg = args.tab_min_seg if min_seg is None else min_seg
     n = len(pts)
     gap = args.tab_width + args.tool
     others = unary_union([q.outline for q in parts if q is not part]).buffer(args.tool + TAB_CLEAR)
@@ -199,7 +217,7 @@ def tab_spots(pts, part):
     for i in range(n):
         a, b = pts[i], pts[(i + 1) % n]
         L = math.dist(a, b)
-        if L < max(args.tab_min_seg, gap + 2):
+        if L < max(min_seg, gap + 2):
             continue
         # slide along the side in 2 mm steps, keep the clear spot nearest its middle
         h = gap / 2 / L
@@ -242,6 +260,23 @@ def plan_tabs():
     paths = {id(q): profile_path(q) for q in parts}
     spots = {id(q): tab_spots(paths[id(q)], q) for q in parts}
     chosen = {id(q): pick_tabs(spots[id(q)], q) for q in parts}
+    for spec in args.add_tab:
+        try:
+            ins, xy = spec.split(":")
+            q = next(q for q in parts if q.index == int(ins))
+            want = tuple(float(v) for v in xy.split(","))
+        except (ValueError, StopIteration):
+            raise SystemExit(f"--add-tab {spec}: want INSERT:X,Y with an insert number from the DXF")
+        # any straight side the bridge gap fits on, not just the --tab-min-seg ones
+        taken = {sp[0] for sp in chosen[id(q)]}
+        free = [sp for sp in tab_spots(paths[id(q)], q, 0) if sp[0] not in taken]
+        if not free:
+            raise SystemExit(f"--add-tab {spec}: part {q.index} has no clear bridge spot left")
+        sp = min(free, key=lambda sp: math.dist(sp[3], want))
+        if math.dist(sp[3], want) > 30:
+            raise SystemExit(f"--add-tab {spec}: nearest clear spot is X{sp[3][0]:.0f} Y{sp[3][1]:.0f}, over 30 mm away")
+        chosen[id(q)].append(sp)
+        print(f"added bridge: part {q.index} at X{sp[3][0]:.1f} Y{sp[3][1]:.1f}")
     swept = unary_union([swept_area(paths[id(q)], chosen[id(q)]) for q in parts])
     solid = box(*sheet).difference(swept)
     pieces = sorted(getattr(solid, "geoms", [solid]), key=lambda g: -g.area)
@@ -326,6 +361,18 @@ def cut_profile(pts, part):
     pieces = pieces[k0:] + pieces[:k0]
     fitted = [fit_moves(pc) for pc in pieces]
     rapid_z(args.safe)
+    if args.depth_first:
+        g(f"(bridges: {len(tabs)} x {args.tab_width:g} mm, full height - each side cut to full depth back and forth, one lift per bridge)")
+        for pc, fwd in zip(pieces, fitted):
+            rev = fit_moves(pc[::-1])
+            rapid_z(args.safe)            # bridge hops lift to the safe Z: the stack is not flat
+            rapid_xy(*pc[0])
+            rapid_z(args.approach)
+            for k in range(1, NPASS + 1):
+                plunge(-STEP * k)         # at either end the tool is in its own slot
+                emit_moves(fwd if k % 2 else rev, args.feed)
+        rapid_z(args.safe)
+        return
     for k in range(1, NPASS + 1):
         z = -STEP * k
         if k == 1:
@@ -338,21 +385,59 @@ def cut_profile(pts, part):
             emit_moves(moves, args.feed)
     rapid_z(args.safe)
 
-def drill_hole(cx, cy):
-    """Straight peck drilling at the plunge feed; retract above the stock between pecks."""
+def mill_hole(cx, cy, rp):
+    """Hole bigger than the tool: inside contour, helix down CW (conventional) on radius rp, one flat lap at the bottom."""
+    global plunge_len
     rapid_z(args.safe)
+    rapid_xy(cx + rp, cy)
+    rapid_z(args.approach)
+    turns = max(1, math.ceil((args.approach + HOLE_DEPTH) / args.helix_pitch - 1e-9))
+    dz = (args.approach + HOLE_DEPTH) / turns
+    lap = 2 * math.pi * rp
+    feed = f" F{args.plunge:.0f}"
+    for t in range(1, turns + 1):
+        z = args.approach - dz * t
+        g(f"G2 X{f3(cx + rp)} Y{f3(cy)} Z{f3(z)} I{f3(-rp)} J0{feed}")
+        feed = ""
+        plunge_len += math.hypot(lap, dz)
+    pos[2] = -HOLE_DEPTH
+    g(f"G2 X{f3(cx + rp)} Y{f3(cy)} I{f3(-rp)} J0")
+    g(f"G1 X{f3(cx)} Y{f3(cy)}")      # off the wall before lifting
+    plunge_len += lap + rp
+    pos[0], pos[1] = cx, cy
+    rapid_z(args.safe)
+
+
+def peck_lengths():
+    """The --peck lengths as drilled to HOLE_DEPTH (last one repeats, last peck shortened)."""
+    out, z = [], 0.0
+    while z < HOLE_DEPTH - 1e-9:
+        d = min(PECKS[min(len(out), len(PECKS) - 1)], HOLE_DEPTH - z)
+        out.append(d)
+        z += d
+    return out
+
+
+def drill_hole(cx, cy, r=None):
+    """Straight peck drilling at the plunge feed; retract above the stock between pecks.
+    Holes more than 0.05 mm wider than the tool are milled as an inside contour instead."""
+    if r is not None and r - R > 0.05 / 2:
+        return mill_hole(cx, cy, r - R)
+    if pos[2] is not None and pos[2] < HOLE_LIFT:
+        rapid_z(HOLE_LIFT)        # stays at the hole lift from the last hole of this part; the caller lifts to --safe between parts
     rapid_xy(cx, cy)
     rapid_z(args.approach)
-    z = 0.0
+    z, k = 0.0, 0
     while z > -HOLE_DEPTH + 1e-9:
-        nz = max(z - PECK, -HOLE_DEPTH)
+        nz = max(z - PECKS[min(k, len(PECKS) - 1)], -HOLE_DEPTH)
+        k += 1
         if z < 0:
             rapid_z(z + 0.5)          # back down to just above the last depth
         plunge(nz)
         z = nz
         if z > -HOLE_DEPTH + 1e-9:
             rapid_z(1.0)              # clear chips
-    rapid_z(args.safe)
+    rapid_z(HOLE_LIFT)
 
 # ---------------------------------------------------------------- order + emit
 
@@ -363,16 +448,20 @@ g("%")
 OPS = {"all": "holes + outside profiles", "holes": "HOLES ONLY", "profile": "OUTSIDE PROFILES ONLY (holes are in a separate file)"}[args.ops]
 g(f"(Plywood hex dome parts - {OPS} - {len(parts)} parts, {total_holes} holes, sheet {sheet[2]-sheet[0]:.0f} x {sheet[3]-sheet[1]:.0f} mm)")
 g(f"(Source: {os.path.basename(args.dxf)})")
+MAXD = max(DEPTH if args.ops != "holes" else 0, HOLE_DEPTH if args.ops != "profile" else 0)
+g(f"(T1 D={args.tool:g} flat end mill - flute length must exceed {MAXD:.1f} mm)")   # before the version: senders take the first tool size they find
 if args.rev:
     g(f"(Version: {args.rev}, generated {datetime.date.today()})")
-MAXD = max(DEPTH if args.ops != "holes" else 0, HOLE_DEPTH if args.ops != "profile" else 0)
-g(f"(T1 D={args.tool:g} flat end mill - flute length must exceed {MAXD:.1f} mm)")
 g(f"(Stock: stack {args.stock:g} mm thick = 6 x 5 mm plywood, cut {MAXD - args.stock:g} mm into the spoilboard)")
 if args.ops != "holes":
     g(f"(Passes: {NPASS} x {STEP:.3f} mm. Feed {args.feed:.0f}, plunge {args.plunge:.0f} mm/min. " + (f"{args.tabs} full-height bridges per part, {args.tab_width:g} mm wide" + (f", +{len(tab_extra)} holding waste islands" if tab_extra else "") + " - saw them off by hand.)" if args.tabs else "No tabs.)"))
 if args.ops != "profile":
-    how = f"{PECK:g} mm pecks" if PECK < HOLE_DEPTH else "one plunge, no pecking"
-    g(f"(Holes: D={args.tool:g} mm with the endmill to Z-{HOLE_DEPTH:g}, {how} at F{args.plunge:.0f})")
+    hd = sorted({round(2 * h[2], 2) for q in parts for h in q.holes})
+    if hd and hd[-1] - args.tool > 0.05:
+        g(f"(Holes: D={'/'.join(f'{d:g}' for d in hd)} mm inside contour, CW helix {args.helix_pitch:g} mm/turn to Z-{HOLE_DEPTH:g} at F{args.plunge:.0f})")
+    else:
+        how = "one plunge, no pecking" if PECKS[0] >= HOLE_DEPTH else "pecks " + " + ".join(f"{d:g}" for d in peck_lengths()) + " mm"
+        g(f"(Holes: D={args.tool:g} mm with the endmill to Z-{HOLE_DEPTH:g}, {how} at F{args.plunge:.0f}" + (f", lift Z{HOLE_LIFT:g} between holes of one part, Z{args.safe:g} between parts" if HOLE_LIFT < args.safe else "") + ")")
 g("(ORIGIN: X0 Y0 = lower-left corner of the sheet stack, Z0 = TOP of the stack)")
 g("(Keep screws/clamps away from all cut paths.)")
 if args.spindle == "vfd":
@@ -389,8 +478,21 @@ else:
     g("(PAUSE - switch the router ON, then press Resume)")
     g("M0")
 
+if args.holes_first and args.ops == "all":
+    holes = [h for q in parts for h in q.holes]
+    last_part = None
+    g(f"(All {len(holes)} holes first, then the {len(parts)} outlines)")
+    while holes:
+        h = min(holes, key=lambda c: math.dist(pos[:2], c[:2]))
+        if pos[2] is not None and pos[2] < args.safe and next((q for q in parts if h in q.holes), None) is not last_part:
+            rapid_z(args.safe)
+        last_part = next(q for q in parts if h in q.holes)
+        drill_hole(*h)
+    rapid_z(args.safe)
+    args.ops = "profile"
+
 remaining = parts[:]
-here = (0.0, 0.0)
+here = tuple(pos[:2])
 n = 0
 while remaining:
     part = min(remaining, key=lambda q: q.outline.distance(Polygon([here, (here[0] + 1e-3, here[1]), (here[0], here[1] + 1e-3)])))
@@ -404,7 +506,8 @@ while remaining:
         h = min(holes, key=lambda c: math.dist(pos[:2], c[:2]))
         holes.remove(h)
         if args.ops != "profile":
-            drill_hole(h[0], h[1])
+            drill_hole(*h)
+    rapid_z(args.safe)
     if args.ops != "holes":
         cut_profile(profile_path(part), part)
     here = tuple(pos[:2])
