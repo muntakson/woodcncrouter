@@ -28,6 +28,7 @@ p.add_argument("--tool", type=float, default=8.0, help="endmill diameter mm")
 p.add_argument("--stock", type=float, default=30.0, help="stack thickness mm (6 x 5 mm)")
 p.add_argument("--through", type=float, default=0.5, help="extra depth into the spoilboard mm")
 p.add_argument("--step", type=float, default=4.0, help="max depth per pass mm")
+p.add_argument("--start-depth", type=float, default=0.0, help="profile passes start below this depth mm (re-cut an existing slot deeper; the tool feeds down the slot from --approach)")
 p.add_argument("--feed", type=float, default=800, help="cutting feed mm/min")
 p.add_argument("--plunge", type=float, default=500, help="plunge feed mm/min (Grbl caps it at $112)")
 p.add_argument("--peck", default="6", help="peck length mm, or a list like 15,16 (last one repeats); retract to clear chips after each (0 = one plunge)")
@@ -58,8 +59,9 @@ args.rev = args.rev.replace("(", "").replace(")", "")   # Grbl comments cannot n
 
 R = args.tool / 2
 DEPTH = args.stock + args.through
-NPASS = math.ceil(DEPTH / args.step - 1e-9)
-STEP = DEPTH / NPASS
+TOP = args.start_depth
+NPASS = math.ceil((DEPTH - TOP) / args.step - 1e-9)
+STEP = (DEPTH - TOP) / NPASS
 HOLE_LIFT = args.safe if args.hole_lift is None else args.hole_lift
 if not args.approach <= HOLE_LIFT <= args.safe:
     raise SystemExit("--hole-lift must be between --approach and --safe")
@@ -83,6 +85,8 @@ pos = [0.0, 0.0, None]   # Z None = still at the homed height, above any safe Z
 
 def rapid_xy(x, y):
     global rapid_len
+    if pos[2] is None:       # Z may be down at a touch-off: lift to the homed top (MPos Z0) first; no move if already home
+        g("G53 G0 Z0 (lift to the homed top before any X/Y move)")
     rapid_len += math.dist(pos[:2], (x, y))
     g(f"G0 X{f3(x)} Y{f3(y)}")
     pos[0], pos[1] = x, y
@@ -352,7 +356,7 @@ def cut_profile(pts, part):
         rapid_xy(*ring[0])
         rapid_z(args.approach)
         for k in range(1, NPASS + 1):
-            plunge(-STEP * k)
+            plunge(-TOP - STEP * k)
             emit_moves(moves, args.feed)
         rapid_z(args.safe)
         return
@@ -369,12 +373,12 @@ def cut_profile(pts, part):
             rapid_xy(*pc[0])
             rapid_z(args.approach)
             for k in range(1, NPASS + 1):
-                plunge(-STEP * k)         # at either end the tool is in its own slot
+                plunge(-TOP - STEP * k)         # at either end the tool is in its own slot
                 emit_moves(fwd if k % 2 else rev, args.feed)
         rapid_z(args.safe)
         return
     for k in range(1, NPASS + 1):
-        z = -STEP * k
+        z = -TOP - STEP * k
         if k == 1:
             g(f"(bridges: {len(tabs)} x {args.tab_width:g} mm, full height - tool lifts over each one)")
         for pc, moves in zip(pieces, fitted):
@@ -454,7 +458,7 @@ if args.rev:
     g(f"(Version: {args.rev}, generated {datetime.date.today()})")
 g(f"(Stock: stack {args.stock:g} mm thick = 6 x 5 mm plywood, cut {MAXD - args.stock:g} mm into the spoilboard)")
 if args.ops != "holes":
-    g(f"(Passes: {NPASS} x {STEP:.3f} mm. Feed {args.feed:.0f}, plunge {args.plunge:.0f} mm/min. " + (f"{args.tabs} full-height bridges per part, {args.tab_width:g} mm wide" + (f", +{len(tab_extra)} holding waste islands" if tab_extra else "") + " - saw them off by hand.)" if args.tabs else "No tabs.)"))
+    g(f"(Passes: {NPASS} x {STEP:.3f} mm" + (f" from Z-{TOP:g} to Z-{DEPTH:g} (re-cut of the existing slots)" if TOP else "") + f". Feed {args.feed:.0f}, plunge {args.plunge:.0f} mm/min. " + (f"{args.tabs} full-height bridges per part, {args.tab_width:g} mm wide" + (f", +{len(tab_extra)} holding waste islands" if tab_extra else "") + " - saw them off by hand.)" if args.tabs else "No tabs.)"))
 if args.ops != "profile":
     hd = sorted({round(2 * h[2], 2) for q in parts for h in q.holes})
     if hd and hd[-1] - args.tool > 0.05:
