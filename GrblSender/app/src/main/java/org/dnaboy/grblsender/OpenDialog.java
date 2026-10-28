@@ -3,6 +3,7 @@ package org.dnaboy.grblsender;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.graphics.Typeface;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -10,6 +11,7 @@ import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,6 +22,7 @@ import java.util.Map;
  * The toolbar's Open button: one list of the .nc files in Documents/GrblSender and on the backoffice.
  * A file whose backoffice copy is newer than the tablet's (or that is not on the tablet yet) is downloaded
  * first; the rest open from the tablet. "Browse device…" falls back to the system picker.
+ * The ✕ on a row deletes that file from the tablet and/or the backoffice.
  */
 final class OpenDialog {
 
@@ -88,12 +91,14 @@ final class OpenDialog {
                         android.widget.Toast.makeText(a, "Stop the running job first", android.widget.Toast.LENGTH_SHORT).show();
                     } else if (e.fromRemote()) host.openRemote(e.name);
                     else host.openLocal(e.local.uri);
-                }));
+                }, (wrap) -> confirmDelete(a, e, list, wrap)));
             });
         }, "open-list").start();
     }
 
-    private static LinearLayout row(Activity a, Entry e, Runnable open) {
+    interface OnDelete { void at(LinearLayout wrap); }
+
+    private static LinearLayout row(Activity a, Entry e, Runnable open, OnDelete delete) {
         LinearLayout r = new LinearLayout(a);
         r.setOrientation(LinearLayout.VERTICAL);
         r.setPadding(0, Ui.dp(a, 10), 0, Ui.dp(a, 10));
@@ -107,10 +112,60 @@ final class OpenDialog {
         r.addView(Ui.text(a, where + " · " + FilesSection.size(size) + " · " + FilesSection.date(e.newest()), 12, Ui.MUTED));
         r.setOnClickListener(v -> open.run());
         r.setBackgroundResource(android.R.drawable.list_selector_background);
+        Button del = Ui.button(a, "✕", 4);
+        del.setMinWidth(Ui.dp(a, 48));
+        LinearLayout line = Ui.row(a);
+        line.addView(r, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        dp.setMarginStart(Ui.dp(a, 8));
+        line.addView(del, dp);
         LinearLayout wrap = new LinearLayout(a);
         wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.addView(r);
+        wrap.addView(line);
         wrap.addView(Ui.divider(a));
+        del.setOnClickListener(v -> delete.at(wrap));
         return wrap;
+    }
+
+    /** Ask, then delete the tablet copy, the backoffice copy or both; the row goes when nothing is left. */
+    private static void confirmDelete(Activity a, Entry e, LinearLayout list, LinearLayout wrap) {
+        boolean onTablet = e.local != null, onServer = e.remoteModified > 0;
+        AlertDialog.Builder b = new AlertDialog.Builder(a)
+                .setTitle("Delete " + e.name + "?")
+                .setNegativeButton("Cancel", null);
+        if (onTablet && onServer) {
+            b.setMessage("It is on the tablet and on the backoffice.")
+                    .setNeutralButton("Tablet only", (d, w) -> delete(a, e, true, false, list, wrap))
+                    .setPositiveButton("Both", (d, w) -> delete(a, e, true, true, list, wrap));
+        } else {
+            b.setMessage(onTablet ? "The file is removed from the tablet." : "The file is removed from the backoffice.")
+                    .setPositiveButton("Delete", (d, w) -> delete(a, e, onTablet, onServer, list, wrap));
+        }
+        b.show();
+    }
+
+    private static void delete(Activity a, Entry e, boolean tablet, boolean server, LinearLayout list, LinearLayout wrap) {
+        new Thread(() -> {
+            String err = null;
+            if (tablet) {
+                try {
+                    if ("file".equals(e.local.uri.getScheme())) {
+                        if (!new File(e.local.uri.getPath()).delete()) throw new Exception("not deleted");
+                    } else a.getContentResolver().delete(e.local.uri, null, null);
+                    e.local = null;
+                } catch (Exception ex) { err = "tablet: " + ex.getMessage(); }
+            }
+            if (server) {
+                try {
+                    RemoteLog.deleteGcode(e.name);
+                    e.remoteModified = -1;
+                } catch (Exception ex) { err = (err == null ? "" : err + "; ") + "backoffice: " + ex.getMessage(); }
+            }
+            final String error = err;
+            a.runOnUiThread(() -> {
+                if (error != null) android.widget.Toast.makeText(a, "Could not delete – " + error, android.widget.Toast.LENGTH_LONG).show();
+                if (e.local == null && e.remoteModified <= 0) list.removeView(wrap);
+            });
+        }, "open-delete").start();
     }
 }

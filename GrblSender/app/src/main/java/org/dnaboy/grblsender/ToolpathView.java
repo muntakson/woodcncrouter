@@ -46,6 +46,8 @@ public class ToolpathView extends View {
     private final Paint rapidPaint = new Paint(), feedPaint = new Paint(), cutPaint = new Paint(), donePaint = new Paint();
     private final Paint tracePaint = new Paint(), toolFill = new Paint(), toolEdge = new Paint(), cross = new Paint();
     private final Paint text = new Paint(), textMuted = new Paint(), iconBody = new Paint(), iconFlute = new Paint(), panel = new Paint();
+    private final Paint partFill = new Paint(Paint.ANTI_ALIAS_FLAG), partEdge = new Paint(Paint.ANTI_ALIAS_FLAG),
+            partText = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Matrix matrix = new Matrix();
     private final float density;
 
@@ -78,6 +80,10 @@ public class ToolpathView extends View {
         iconBody.setColor(0xFFB8C0C8); iconBody.setAntiAlias(true);
         iconFlute.setColor(0xFF5A6370); iconFlute.setStrokeWidth(1.5f * density); iconFlute.setAntiAlias(true);
         panel.setColor(0xCC15171A);
+        partEdge.setStyle(Paint.Style.STROKE);
+        partEdge.setStrokeWidth(1.5f * density);
+        partText.setColor(0xFFFFFFFF);
+        partText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
 
         scaleDetector = new ScaleGestureDetector(ctx, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override public boolean onScale(ScaleGestureDetector d) {
@@ -242,8 +248,37 @@ public class ToolpathView extends View {
         }
         c.restore();
 
+        drawParts(c);
         if (toolKnown) drawTool(c);
         drawInfo(c);
+    }
+
+    /** Part numbers from the "(Part n/N)" comments: green once done, amber while being cut. */
+    private void drawParts(Canvas c) {
+        if (path == null || path.partNo.length == 0) return;
+        float r = 11 * density;
+        partText.setTextSize(12 * density);
+        // one section's numbers: the one being cut, else the last (the profiles of a holes-then-profiles file)
+        int show = path.partSection[path.partSection.length - 1];
+        if (doneLine >= 0) {
+            int cur = -1;
+            for (int i = 0; i < path.partNo.length; i++) if (path.partFirstLine[i] <= doneLine) cur = Math.max(cur, path.partSection[i]);
+            if (cur >= 0) show = cur;
+        }
+        for (int i = 0; i < path.partNo.length; i++) {
+            if (path.partSection[i] != show) continue;
+            float sx = toScreenX(path.partXY[i * 2]), sy = toScreenY(path.partXY[i * 2 + 1]);
+            if (sx < -r || sy < -r || sx > getWidth() + r || sy > getHeight() + r) continue;
+            boolean done = doneLine >= path.partLastLine[i];
+            // the part being cut: done lines reached it, but not its end (the hole pass counts for the same part)
+            boolean now = !done && doneLine >= path.partFirstLine[i];
+            partFill.setColor(done ? 0xE02E7D4F : now ? 0xE0B07A10 : 0xD0202A36);
+            partEdge.setColor(done ? 0xFF4CD07D : now ? 0xFFFFB020 : 0xFF4EA1FF);
+            c.drawCircle(sx, sy, r, partFill);
+            c.drawCircle(sx, sy, r, partEdge);
+            String s = String.valueOf(path.partNo[i]);
+            c.drawText(s, sx - partText.measureText(s) / 2, sy + 4.2f * density, partText);
+        }
     }
 
     private void drawGrid(Canvas c) {

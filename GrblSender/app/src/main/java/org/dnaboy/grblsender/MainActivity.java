@@ -361,6 +361,10 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
         findViewById(R.id.btnNew).setOnClickListener(v -> confirmDiscard(this::newDocument));
         findViewById(R.id.btnOpen).setOnClickListener(v -> OpenDialog.show(this, filesHost));
+        findViewById(R.id.btnEdit).setOnClickListener(v -> {
+            if (streaming) { log("A job is running – edit after it ends"); return; }
+            ProgramEdit.show(this, editHost());
+        });
         findViewById(R.id.btnSave).setOnClickListener(v -> save());
         findViewById(R.id.btnSaveAs).setOnClickListener(v -> saveAs());
         findViewById(R.id.btnClose).setOnClickListener(v -> confirmDiscard(this::closeDocument));
@@ -3039,6 +3043,28 @@ public class MainActivity extends Activity implements SerialLink.Listener {
 
     /** Safety check → Update G-code: save the depth-limited copy next to the other programs, then offer to open it. */
     private void saveSafetyCopy(String name, String text, String note) {
+        saveCopy(name, text, note, "Open it now and run the safety check on it?", NAV_SAFETY, "safety");
+    }
+
+    /** Edit → Update .nc: save the edited copy next to the other programs, then offer to open it. */
+    private ProgramEdit.Host editHost() {
+        return new ProgramEdit.Host() {
+            @Override public String text() { return docText(); }
+            @Override public String fileName() { return docName; }
+            @Override public java.util.Map<String, String> grblSettings() { return grblSettings; }
+            @Override public boolean exists(String name) {
+                for (FilesSection.LocalFile f : FilesSection.listLocal(MainActivity.this)) if (f.name.equals(name)) return true;
+                return false;
+            }
+            @Override public void save(String name, String text, String note) {
+                log("Edit: " + note);
+                saveCopy(name, text, note, "Open it now?", NAV_CONTROL, "edit");
+            }
+        };
+    }
+
+    /** Saves text as Documents/GrblSender/name, then offers to open it and show page. */
+    private void saveCopy(String name, String text, String note, String question, int page, String tag) {
         new Thread(() -> {
             try {
                 Uri uri = saveLocalFile(name, text.getBytes(StandardCharsets.UTF_8));
@@ -3046,20 +3072,19 @@ public class MainActivity extends Activity implements SerialLink.Listener {
                     log("Saved Documents/" + SAMPLE_DIR + "/" + name + " – " + note);
                     new AlertDialog.Builder(this)
                             .setTitle("Saved " + name)
-                            .setMessage("Documents/" + SAMPLE_DIR + "/" + name + "\n\n" + note
-                                    + "\n\nOpen it now and run the safety check on it?")
+                            .setMessage("Documents/" + SAMPLE_DIR + "/" + name + "\n\n" + note + "\n\n" + question)
                             .setPositiveButton("Open", (d, w) -> confirmDiscard(() -> {
-                                if (loadDocument(uri, true)) showPage(NAV_SAFETY);
+                                if (loadDocument(uri, true)) showPage(page);
                             }))
                             .setNegativeButton("Later", null)
                             .show();
                 });
             } catch (Exception e) {
-                RemoteLog.e("safety", "save " + name, e);
+                RemoteLog.e(tag, "save " + name, e);
                 ui.post(() -> android.widget.Toast.makeText(this, "Could not save " + name + ": " + e.getMessage(),
                         android.widget.Toast.LENGTH_LONG).show());
             }
-        }, "safety-save").start();
+        }, tag + "-save").start();
     }
 
     private void openSettings(int sec) {
@@ -3516,6 +3541,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
             @Override public void hold() { feedHold("tablet"); }
             @Override public void resume() { writeRaw(new byte[]{'~'}); log(">> ~ (resume)"); }
             @Override public float[] machinePos() { return mpos.clone(); }
+            @Override public float[] wco() { return wco.clone(); }
             @Override public String machineStatus() {
                 return String.format(Locale.US, "State: %s   MPos X %.3f  Y %.3f  Z %.3f%s", machineState.isEmpty() ? "–" : machineState,
                         mpos[0], mpos[1], mpos[2], pinState.isEmpty() ? "" : "   active inputs: " + pinState);
@@ -4186,7 +4212,7 @@ public class MainActivity extends Activity implements SerialLink.Listener {
         baudSpinner.setEnabled(!connected && BOARD_PROMINI.equals(board()));
         btnRun.setEnabled(connected && !streaming && docLength() > 0);
         btnLoad.setEnabled(!streaming && docLength() > 0);
-        for (int id : new int[]{R.id.btnNew, R.id.btnOpen, R.id.btnClose}) findViewById(id).setEnabled(!streaming);
+        for (int id : new int[]{R.id.btnNew, R.id.btnOpen, R.id.btnEdit, R.id.btnClose}) findViewById(id).setEnabled(!streaming);
         // realtime commands only mean something with a machine attached; dim them otherwise
         setLive(R.id.btnHold, connected);
         setLive(R.id.btnResume, connected);

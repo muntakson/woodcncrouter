@@ -585,7 +585,10 @@ async function handle(req, res) {
   // ---- remote-control API: dashboard login (LAN / Basic) or "Authorization: Bearer CNC_API_KEY"
   if (p.startsWith('/api/cnc') || (p === '/api/jobs' || p.startsWith('/api/jobs/')) || p === '/api/gcode/upload'
       || (req.method === 'DELETE' && p.startsWith('/api/gcode/')) || p === '/cnc') {
-    if (!isAdmin(req) && !hasApiKey(req)) {
+    // the tablet's Open dialog deletes NC files with its ingest key
+    const tabletDelete = req.method === 'DELETE' && p.startsWith('/api/gcode/') && INGEST_KEY
+      && safeEqual(req.headers['x-ingest-key'] || '', INGEST_KEY);
+    if (!isAdmin(req) && !hasApiKey(req) && !tabletDelete) {
       res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Grbl Sender backoffice", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' });
       return res.end('sign in required (dashboard login or Authorization: Bearer <CNC_API_KEY>)');
     }

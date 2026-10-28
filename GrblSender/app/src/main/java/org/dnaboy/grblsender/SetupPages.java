@@ -52,6 +52,8 @@ final class SetupPages {
         String machineStatus();
         /** Last machine position (MPos) from the status report: X, Y, Z, A. */
         float[] machinePos();
+        /** Work coordinate offset (WCO) from the status report: WPos = MPos − WCO. */
+        float[] wco();
         /** Soft reset (Ctrl-X): stops all motion at once, also a homing cycle. */
         void estop();
         /** Feed hold (!) / cycle resume (~). */
@@ -81,6 +83,12 @@ final class SetupPages {
     // ---------------------------------------------------------------- page scaffolding
 
     private LinearLayout body;
+    /** Tabs of the current page: {@link #tab(String)} adds one; its contents go into its own pane. */
+    private LinearLayout tabBar, content;
+    private ScrollView scroll;
+    private final java.util.List<Button> tabButtons = new java.util.ArrayList<>();
+    private final java.util.List<LinearLayout> tabPanes = new java.util.ArrayList<>();
+    private String tabPref;
 
     private Dialog page(String title, LinearLayout extraButtons) {
         int pad = px(16);
@@ -92,8 +100,17 @@ final class SetupPages {
         t.setTypeface(null, Typeface.BOLD);
         root.addView(t);
 
-        ScrollView scroll = new ScrollView(a);
-        body = new LinearLayout(a);
+        tabButtons.clear();
+        tabPanes.clear();
+        tabPref = null;
+        tabBar = new LinearLayout(a);
+        tabBar.setOrientation(LinearLayout.HORIZONTAL);
+        tabBar.setPadding(0, px(8), 0, px(8));
+        tabBar.setVisibility(View.GONE);
+        root.addView(tabBar);
+
+        scroll = new ScrollView(a);
+        content = body = new LinearLayout(a);
         body.setOrientation(LinearLayout.VERTICAL);
         scroll.addView(body);
         root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -107,6 +124,40 @@ final class SetupPages {
         d.setContentView(root);
         close.setOnClickListener(v -> d.dismiss());
         return d;
+    }
+
+    /** Starts a new tab: what is added after this goes into its pane. */
+    private void tab(String label) {
+        LinearLayout pane = new LinearLayout(a);
+        pane.setOrientation(LinearLayout.VERTICAL);
+        pane.setVisibility(tabPanes.isEmpty() ? View.VISIBLE : View.GONE);
+        content.addView(pane);
+        tabPanes.add(pane);
+        body = pane;
+        Button b = button(label);
+        b.setTextSize(15);
+        int i = tabButtons.size();
+        b.setOnClickListener(v -> selectTab(i));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(52), 1);
+        lp.rightMargin = px(4);
+        tabBar.addView(b, lp);
+        tabButtons.add(b);
+        tabBar.setVisibility(View.VISIBLE);
+    }
+
+    /** Shows tab i (and remembers it under tabPref so the page reopens on it). */
+    private void selectTab(int i) {
+        if (i < 0 || i >= tabPanes.size()) i = 0;
+        for (int k = 0; k < tabPanes.size(); k++) {
+            boolean on = k == i;
+            tabPanes.get(k).setVisibility(on ? View.VISIBLE : View.GONE);
+            Button b = tabButtons.get(k);
+            b.setBackgroundColor(on ? HEAD : CELL);
+            b.setTextColor(on ? 0xFFFFFFFF : DIM);
+            b.setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
+        }
+        scroll.scrollTo(0, 0);
+        if (tabPref != null) host.prefs().edit().putInt(tabPref, i).apply();
     }
 
     private int px(float v) { return (int) (v * dp); }
@@ -386,7 +437,7 @@ final class SetupPages {
         });
         p("The stock config.yaml has steps_per_mm 800 and 5000 mm/min on every axis, made for StepStick modules. "
                 + "Set this router's values before the first move (CNC setup page, or the console): "
-                + "$/axes/x/steps_per_mm=84.88, $/axes/y/steps_per_mm=84.88, $/axes/z/steps_per_mm=1600, $/axes/z/max_rate_mm_per_min=500, then $CD=config.yaml "
+                + "$/axes/x/steps_per_mm=83.33, $/axes/y/steps_per_mm=83.33, $/axes/z/steps_per_mm=320, $/axes/z/max_rate_mm_per_min=1000, then $CD=config.yaml "
                 + "to save. If an axis runs the wrong way, add :low to its direction_pin in config.yaml.", WARN);
         p("Measure the STEP terminal voltage before wiring the MA860H: if it is 3.3 V the opto current is low; "
                 + "use a 5 V buffer (74HCT245) if a motor misses steps.");
@@ -554,6 +605,7 @@ final class SetupPages {
         buttons.addView(apply, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.6f));
         Dialog d = page("CNC setup", buttons);
 
+        tab("Machine");
         image(R.drawable.art_cnc_router, "Illustration (AI-generated): 1325 × 2500 mm gantry router, 4 kW ER32 spindle, MK300 inverter.");
 
         int savedPulses;
@@ -570,6 +622,7 @@ final class SetupPages {
 
         image(R.drawable.art_cnc_drivetrain, "Illustration (AI-generated): X/Y with the 1:5 belt. Z (not drawn right): motor direct on a 5 mm-lead screw.");
 
+        tab("Stepper");
         h("Microstepping (MA860H)");
         p("Set the same SW5–SW8 positions on all three drivers (power off), then pick the setting here. Apply scales the "
                 + "controller's steps/mm (and so a measured calibration) by new ÷ old pulses/rev.");
@@ -587,12 +640,14 @@ final class SetupPages {
 
         h("Steps per mm");
         p("X/Y: steps/mm = pulses/rev × reduction ÷ (pinion teeth × rack pitch). Z: steps/mm = pulses/rev × reduction ÷ screw lead.\n"
-                + "Rack pitch: a rack sold as \"4 mm\" is usually module 1.25 = π × 1.25 = 3.927 mm (the default, which gives "
-                + "84.88 with the 24T pinion at 1600 pulses/rev). Enter 4.0 only for a true 4 mm circular pitch (83.33). "
+                + "Rack: true 4 mm circular pitch with the 24T pinion (the defaults) = 83.33 at 1600 pulses/rev; the X/Y travel "
+                + "measured on this machine on 2026-10-26 fits it within 0.4 % (X 83.52, Y 83.66 set on the board). "
+                + "A module 1.25 rack would be 3.927 mm (84.88). "
                 + "Z: motor direct on a 5 mm-lead screw (no belt reduction, measured 2026-10-14) = 320 steps/mm, 5 mm per motor rev.");
         EditText red = field(row(), "X/Y reduction (1:n)", "cnc_red", "5");
-        EditText teeth = field(row(), "X/Y pinion teeth", "cnc_teeth", "24");
-        EditText pitch = field(row(), "X/Y rack pitch (mm)", "cnc_rack_pitch", "3.927");
+        // new keys: tablets saved 3.927 (module 1.25) and 25T before the rack was measured as 4 mm / 24T
+        EditText teeth = field(row(), "X/Y pinion teeth", "cnc_teeth24", "24");
+        EditText pitch = field(row(), "X/Y rack pitch (mm)", "cnc_rack_pitch4", "4.0");
         // new key: tablets saved cnc_zred = 5 while Z was thought to have a 1:5 belt
         EditText zRed = field(row(), "Z reduction (1:n)", "cnc_zred_direct", "1");
         EditText zLead = field(row(), "Z screw lead (mm/rev)", "cnc_zlead", "5");
@@ -607,6 +662,7 @@ final class SetupPages {
         p("Then check it: jog X 500 mm and measure. New $100 = current $100 × 500 ÷ measured distance. Same for Y and Z (use 50 mm on Z).");
 
         // ---- Axes & homing
+        tab("Axis & homing");
         h("Axes & homing");
         p("DIR invert: tick an axis that moves the wrong way (its position counts up while it moves towards the home sensor "
                 + "at the minus end, for example). Home toward: the end of the axis where its home sensor sits. "
@@ -879,10 +935,25 @@ final class SetupPages {
         load[0].run();
 
         // ---- Work offset G54
+        tab("Work offset");
         h("Work offset G54");
+        LinearLayout mcsRow = row();
+        mcsRow.addView(text("Current MCS (machine)", 15, FG), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f));
+        TextView mcsNow = text("–", 17, GOOD);
+        mcsNow.setTypeface(android.graphics.Typeface.MONOSPACE);
+        mcsRow.addView(mcsNow, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        Runnable mcsWatch = new Runnable() {
+            @Override public void run() {
+                if (!d.isShowing()) return;
+                float[] m = host.machinePos();
+                mcsNow.setText(host.connected() ? String.format(java.util.Locale.US, "X %.3f  Y %.3f  Z %.3f", m[0], m[1], m[2]) : "Not connected");
+                mcsNow.postDelayed(this, 250);
+            }
+        };
+        mcsNow.post(mcsWatch);
         p("G54 is the work zero that G-code jobs use: the machine position (after homing) where X0 Y0 Z0 of the job lies. "
                 + "\"Write G54\" sends G10 L2 P1 with these values; the controller keeps them through power-off. "
-                + "\"Set G54\" makes the current machine position the work zero (WCS 0, 0, 0). "
+                + "\"Set G54\" makes the Current MCS the work zero (WCS 0, 0, 0); the G54 fields then show the saved value. "
                 + "The Zero XY / Zero Z buttons on the Control page overwrite G54 with the current position.");
         EditText[] g54 = {
                 field(row(), "G54 X (mm, machine)", "cnc_g54_x", "500"),
@@ -904,6 +975,10 @@ final class SetupPages {
         TextView g54Now = p("", DIM);
         Runnable g54Show = () -> {
             String v = host.grblSettings().get("G54");
+            if (v != null) {                     // the fields follow what the controller saved
+                String[] xyz = v.split(",");
+                for (int i = 0; i < 3 && i < xyz.length; i++) g54[i].setText(xyz[i].trim());
+            }
             g54Now.setText(v != null ? "In the controller now: G54 = " + v.replace(",", " / ") + " (X / Y / Z)"
                     : host.connected() ? "Press \"Read G54\" to see the value in the controller." : "Connect to read G54 from the controller.");
         };
@@ -975,6 +1050,7 @@ final class SetupPages {
         g54Show.run();
         if (!fluid && host.connected() && !host.busy()) g54Query.run();   // FluidNC: $CD is being read now
 
+        tab("Recommended");
         h("Recommended settings");
         table(new String[][]{
                 {"Setting", "Value", "Why"},
@@ -986,10 +1062,12 @@ final class SetupPages {
                 {"$1", "255", "Keep motors energised when idle so Z cannot drop"},
                 {"$0", "10", "Step pulse µs, safe for MA860H opto inputs"},
         });
-        p("Feed for an 8 mm 2-flute end mill in plywood: about F2000 at 20000–24000 RPM (chip load ≈ 0.05 mm/tooth). "
-                + "ER32 holds 3–20 mm shanks; use the collet that matches the tool shank.");
 
+        tab("Inverter");
         mk300Settings();
+
+        tab("Feedrate");
+        feedrate(d);
 
         apply.setOnClickListener(v -> {
             AxisState st = state[0];
@@ -1048,7 +1126,852 @@ final class SetupPages {
                     .setNegativeButton("Cancel", null)
                     .show();
         });
+        tabPref = "cnc_tab";
+        selectTab(host.prefs().getInt(tabPref, 0));
         d.show();
+    }
+
+    /** Feedrate tab: F from spindle RPM × flutes × chip load, then the X / Y tuning lap. */
+    private void feedrate(Dialog d) {
+        LinearLayout[] sub = subTabs("cnc_feed_sub", "Feed calculator", "X / Y tuning", "Z tuning");
+        LinearLayout outer = body;
+        body = sub[0];
+        h("Feedrate");
+        p("Feed F (mm/min) = spindle RPM × flutes × chip load (mm/tooth). The spindle RPM is the MK300 preset "
+                + "(Hz × 60, see the Inverter tab), not the S word. Too slow a feed rubs and burns the plywood; "
+                + "too fast breaks the tool or makes the steppers miss steps.");
+        EditText rpm = field(row(), "Spindle RPM", "cnc_feed_rpm", "20000");
+        EditText flutes = field(row(), "Flutes", "cnc_feed_flutes", "2");
+        EditText chip = field(row(), "Chip load (mm/tooth)", "cnc_feed_chip", "0.05");
+        TextView out = p("", GOOD);
+        out.setTextSize(18);
+        out.setTypeface(null, Typeface.BOLD);
+        Runnable calc = () -> {
+            out.setText(String.format(Locale.US, "F%.0f mm/min", num(rpm) * num(flutes) * num(chip)));
+            SharedPreferences.Editor ed = host.prefs().edit();
+            for (EditText e : new EditText[]{rpm, flutes, chip}) ed.putString((String) e.getTag(), e.getText().toString());
+            ed.apply();
+        };
+        TextWatcher w = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int af) { }
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) { calc.run(); }
+        };
+        for (EditText e : new EditText[]{rpm, flutes, chip}) e.addTextChangedListener(w);
+        calc.run();
+        p("Feed for an 8 mm 2-flute end mill in plywood: about F2000 at 20000–24000 RPM (chip load ≈ 0.05 mm/tooth). "
+                + "ER32 holds 3–20 mm shanks; use the collet that matches the tool shank.");
+        p("The controller caps F at each axis' G0 speed (Axis & homing tab). Plunge into the wood (Z) at about "
+                + "a third to a half of the XY feed.", DIM);
+        body = sub[1];
+        xyTuning(d);
+        body = sub[2];
+        zTuning(d);
+        body = outer;
+    }
+
+    /** A row of sub-tab buttons with one pane each (added to body); the choice is kept under pref. */
+    private LinearLayout[] subTabs(String pref, String... labels) {
+        LinearLayout bar = row();
+        bar.setPadding(0, px(4), 0, px(4));
+        Button[] bs = new Button[labels.length];
+        LinearLayout[] panes = new LinearLayout[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            bs[i] = button(labels[i]);
+            bs[i].setTextSize(14);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(44), 1);
+            lp.rightMargin = px(4);
+            bar.addView(bs[i], lp);
+            panes[i] = new LinearLayout(a);
+            panes[i].setOrientation(LinearLayout.VERTICAL);
+            body.addView(panes[i]);
+        }
+        java.util.function.IntConsumer select = sel -> {
+            for (int k = 0; k < panes.length; k++) {
+                boolean on = k == sel;
+                panes[k].setVisibility(on ? View.VISIBLE : View.GONE);
+                bs[k].setBackgroundColor(on ? 0xFF2E5A8A : CELL);
+                bs[k].setTextColor(on ? 0xFFFFFFFF : DIM);
+                bs[k].setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
+            }
+            scroll.scrollTo(0, 0);
+            host.prefs().edit().putInt(pref, sel).apply();
+        };
+        for (int i = 0; i < labels.length; i++) { int k = i; bs[i].setOnClickListener(v -> select.accept(k)); }
+        int saved = host.prefs().getInt(pref, 0);
+        select.accept(saved >= 0 && saved < labels.length ? saved : 0);
+        return panes;
+    }
+
+    /** Two columns added to body: the drawing left (fixed height, or its own height when heightDp is 0), and the returned right column for the controls. */
+    private LinearLayout columns(View left, int heightDp) {
+        LinearLayout cols = new LinearLayout(a);
+        cols.setOrientation(LinearLayout.HORIZONTAL);
+        cols.addView(left, new LinearLayout.LayoutParams(0, heightDp > 0 ? px(heightDp) : LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        LinearLayout right = new LinearLayout(a);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.setPadding(px(12), 0, 0, 0);
+        cols.addView(right, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        body.addView(cols);
+        return right;
+    }
+
+    /** Small explanatory text for the tuning sections. */
+    private TextView small(CharSequence s, int color) {
+        TextView t = p(s, color);
+        t.setTextSize(13);
+        t.setPadding(0, px(1), 0, px(3));
+        return t;
+    }
+
+    /** Go / Pause / Stop row of the tuning sections. */
+    private Button[] goPauseStop() {
+        LinearLayout btns = row();
+        btns.setPadding(0, px(6), 0, 0);
+        Button go = button("Go"), pause = button("Pause"), stop = button("Stop");
+        go.setTextColor(GOOD);
+        pause.setTextColor(WARN);
+        stop.setTextColor(0xFFFFFFFF);
+        stop.setTypeface(null, Typeface.BOLD);
+        stop.setBackgroundColor(0xFFC62828);
+        for (Button b : new Button[]{go, pause, stop}) {
+            b.setTextSize(16);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(56), 1);
+            lp.rightMargin = px(6);
+            btns.addView(b, lp);
+        }
+        return new Button[]{go, pause, stop};
+    }
+
+    // ---------------------------------------------------------------- X / Y axis tuning
+
+    /** Tuning square: 300 × 300 mm centred at WCS (600, 600); the lap starts and ends at corner 1. */
+    private static final double SQ_C = 600, SQ_HALF = 150, TUNE_Z = 50;
+    private static final double[][] SQ_CORNERS = {
+            {SQ_C - SQ_HALF, SQ_C - SQ_HALF}, {SQ_C + SQ_HALF, SQ_C - SQ_HALF},
+            {SQ_C + SQ_HALF, SQ_C + SQ_HALF}, {SQ_C - SQ_HALF, SQ_C + SQ_HALF}};
+
+    /** The tuning square in WCS with the tool's live position. */
+    private final class SquareView extends View {
+        float wx = Float.NaN, wy = Float.NaN;
+        int target = -1;                      // corner being approached, -1 = none
+        private final android.graphics.Paint pt = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        SquareView() { super(a); setBackgroundColor(CELL); }
+
+        @Override protected void onDraw(android.graphics.Canvas c) {
+            float w = getWidth(), h = getHeight();
+            // WCS 400…800 on both axes, Y up
+            double lo = SQ_C - SQ_HALF - 50, span = 2 * (SQ_HALF + 50);
+            float k = (float) (Math.min(w, h) / span), ox = (w - (float) span * k) / 2, oy = (h - (float) span * k) / 2;
+            pt.setStyle(android.graphics.Paint.Style.STROKE);
+            pt.setStrokeWidth(px(2));
+            pt.setColor(GOOD);
+            float x0 = ox + (float) (SQ_CORNERS[0][0] - lo) * k, x1 = ox + (float) (SQ_CORNERS[2][0] - lo) * k;
+            float y0 = oy + (float) (lo + span - SQ_CORNERS[0][1]) * k, y1 = oy + (float) (lo + span - SQ_CORNERS[2][1]) * k;
+            c.drawRect(x0, y1, x1, y0, pt);
+            pt.setStyle(android.graphics.Paint.Style.FILL);
+            pt.setTextSize(px(13));
+            for (int i = 0; i < 4; i++) {
+                float cx = ox + (float) (SQ_CORNERS[i][0] - lo) * k, cy = oy + (float) (lo + span - SQ_CORNERS[i][1]) * k;
+                pt.setColor(i == target ? WARN : FG);
+                c.drawCircle(cx, cy, px(5), pt);
+                String label = (i + 1) + "  (" + (int) SQ_CORNERS[i][0] + ", " + (int) SQ_CORNERS[i][1] + ")";
+                float tw = pt.measureText(label);
+                c.drawText(label, cx - tw / 2, i < 2 ? cy + px(20) : cy - px(10), pt);
+            }
+            pt.setColor(DIM);
+            String[] centre = {"300 × 300 mm", "centre WCS (600, 600)"};
+            for (int i = 0; i < 2; i++) c.drawText(centre[i], (w - pt.measureText(centre[i])) / 2, h / 2 + (i - 0.3f) * px(17), pt);
+            if (!Float.isNaN(wx)) {
+                // tool dot, held at the edge when it is outside the drawn area
+                float tx = ox + (float) Math.max(0, Math.min(span, wx - lo)) * k;
+                float ty = oy + (float) Math.max(0, Math.min(span, lo + span - wy)) * k;
+                pt.setColor(0xFFFF5555);
+                c.drawCircle(tx, ty, px(7), pt);
+            }
+        }
+    }
+
+    /** Number field with ▼ / ▲ buttons that step it by step (kept in prefs under key). */
+    private EditText stepField(String label, String key, int def, int step, int min) {
+        LinearLayout r = row();
+        r.addView(text(label, 14, FG), new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f));
+        Button down = button("▼"), up = button("▲");
+        EditText e = numField(host.prefs().getString(key, String.valueOf(def)));
+        e.setTag(key);
+        e.setGravity(android.view.Gravity.CENTER);
+        r.addView(down, new LinearLayout.LayoutParams(px(64), px(48)));
+        r.addView(e, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f));
+        r.addView(up, new LinearLayout.LayoutParams(px(64), px(48)));
+        down.setOnClickListener(v -> e.setText(String.valueOf(Math.max(min, (int) num(e) - step))));
+        up.setOnClickListener(v -> e.setText(String.valueOf((int) num(e) + step)));
+        e.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int af) { }
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) { host.prefs().edit().putString(key, s.toString()).apply(); }
+        });
+        return e;
+    }
+
+    /** Leadshine MA860H datasheet: pulse input up to 300 kHz. */
+    private static final int MA860H_MAX_HZ = 300000;
+
+    /**
+     * Practical maximum rapid of an axis: the NEMA34 torque corner (~600 rpm on the MA860H at 80 VAC) limits it,
+     * long before the controller's or the driver's pulse rate does.
+     */
+    private String limitsText(int axis, String expect) {
+        Map<String, String> s = host.grblSettings();
+        int pulses;
+        try { pulses = Integer.parseInt(host.prefs().getString("cnc_pulses", "1600").trim()); } catch (NumberFormatException e) { pulses = 1600; }
+        double steps = s.containsKey("$10" + axis) ? dnum(s, "$10" + axis) : axis == 2 ? 320 : 83.5;
+        double mmRev = pulses / steps;
+        String name = axis == 2 ? "Z" : "X / Y";
+        long motor = Math.round(MOTOR_MAX_RPM * mmRev / 100) * 100, ctrl = Math.round(controllerHz() * 60.0 / steps / 100) * 100;
+        String ctrlName = MainActivity.BOARD_FLUIDNC.equals(host.board()) ? "FluidNC I2S" : "controller";
+        return String.format(Locale.US, "Practical max %s: %,d mm/min = %s. Motor %d rpm × %.2f mm/rev = %,d (NEMA34 torque falls off "
+                        + "above ≈600 rpm; 1000 rpm = %,d with little torque); %s %d kHz = %,d; MA860H %d kHz = %,d. "
+                        + "Expect clean runs at %s.",
+                name, Math.min(motor, ctrl), motor <= ctrl ? "the motor limit, pulse rate is not the limit" : "the " + ctrlName + " step rate limit",
+                MOTOR_MAX_RPM, mmRev, motor, Math.round(1000 * mmRev / 100) * 100, ctrlName, controllerHz() / 1000, ctrl,
+                MA860H_MAX_HZ / 1000, Math.round(MA860H_MAX_HZ * 60.0 / steps / 100) * 100, expect);
+    }
+
+    private LinearLayout vcol() {
+        LinearLayout l = new LinearLayout(a);
+        l.setOrientation(LinearLayout.VERTICAL);
+        return l;
+    }
+
+    /** {@link #field} with smaller text, for the mass / torque inputs of the tuning sections. */
+    private EditText compactField(LinearLayout row, String label, String key, String def) {
+        EditText e = field(row, label, key, def);
+        ((TextView) row.getChildAt(row.getChildCount() - 2)).setTextSize(13);
+        e.setTextSize(14);
+        e.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int af) { }
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) { host.prefs().edit().putString(key, s.toString()).apply(); }
+        });
+        return e;
+    }
+
+    private double prefNum(String key, double def) {
+        try { return Double.parseDouble(host.prefs().getString(key, String.valueOf(def)).trim().replace(',', '.')); }
+        catch (NumberFormatException e) { return def; }
+    }
+
+    /**
+     * Rough NEMA34 pull-out torque on an MA860H at 80 VAC: about 0.7 × holding torque at low speed,
+     * half of that near 600 rpm (typical 8.5 Nm curve: 6 / 4.5 / 3 / 2 Nm at 100 / 300 / 600 / 1000 rpm).
+     */
+    private static double pullOutNm(double holdNm, double rpm) { return holdNm * 0.75 / (1 + rpm / 550); }
+
+    /** Rotor inertia (kg·m²) scaled from a typical 8.5 Nm NEMA34 (2.7 kg·cm²). */
+    private static double rotorJ(double holdNm) { return 2.7e-4 * holdNm / 8.5; }
+
+    /**
+     * Max accel (mm/s²) of a rack-and-pinion axis at the given rapid: {100 % torque, 50 % torque}.
+     * Motor torque at that speed → 1:n belt → pinion, efficiency 0.85, guide friction 3 % of the weight;
+     * the rotor's inertia counts as mass J × (n / r)².
+     */
+    private double[] accelRack(double massKg, int motors, double holdNm, double rapid) {
+        double red = prefNum("cnc_red", 5), teeth = prefNum("cnc_teeth24", 24), pitch = prefNum("cnc_rack_pitch4", 4.0);
+        double mmRev = teeth * pitch / Math.max(1e-9, red);
+        double k = red / (teeth * pitch / (2 * Math.PI) / 1000);        // rack force per motor Nm, 1/m
+        double force = motors * pullOutNm(holdNm, rapid / mmRev) * k * 0.85;
+        double friction = 0.03 * massKg * 9.81, mass = massKg + motors * rotorJ(holdNm) * k * k;
+        return new double[]{Math.max(0, (force - friction) / mass * 1000), Math.max(0, (0.5 * force - friction) / mass * 1000)};
+    }
+
+    /** Max accel (mm/s²) of Z going up (against gravity) at the given rapid: {100 % torque, 50 % torque}. */
+    private double[] accelZ(double massKg, double holdNm, double rapid) {
+        double red = prefNum("cnc_zred_direct", 1), lead = prefNum("cnc_zlead", 5);
+        double k = 2 * Math.PI * red / (lead / 1000);                    // screw force per motor Nm, 1/m
+        double force = pullOutNm(holdNm, rapid / (lead / Math.max(1e-9, red))) * k * 0.9;
+        double load = massKg * 9.81 * 1.03, mass = massKg + rotorJ(holdNm) * k * k;
+        return new double[]{Math.max(0, (force - load) / mass * 1000), Math.max(0, (0.5 * force - load) / mass * 1000)};
+    }
+
+    /** Time (s) for a straight move of d mm from stop to stop: trapezoid, or triangle when v is never reached. */
+    private static double moveTime(double d, double mmPerMin, double accel) {
+        double v = mmPerMin / 60;
+        if (v <= 0 || accel <= 0) return 0;
+        return d >= v * v / accel ? d / v + v / accel : 2 * Math.sqrt(d / accel);
+    }
+
+    /**
+     * X / Y tuning: writes the accel and max rate (G0 speed) of X and Y, lifts Z to WCS Z50 and runs one G0 lap
+     * round the square, timing it from corner 1 back to corner 1.
+     */
+    private void xyTuning(Dialog d) {
+        final boolean fluid = MainActivity.BOARD_FLUIDNC.equals(host.board());
+        small("Go writes the accel and rapid rate (G0 = max rate) below, lifts Z to WCS Z50, goes to corner 1 and runs one "
+                + "timed G0 lap 1 → 2 → 3 → 4 → 1. Raise them step by step: a motor that misses steps growls or bangs and ends "
+                + "the lap away from corner 1 (mark it with a pen). Take the highest clean pair, then back off about 30 % for cutting.", 0xFFC8CDD3);
+        SquareView sq = new SquareView();
+        LinearLayout outer = body;
+        // left: drawing, the masses for the accel estimate, the practical max rapid
+        LinearLayout left = vcol();
+        left.addView(sq, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(220)));
+        body = left;
+        EditText gantryKg = compactField(row(), "Gantry kg", "tune_gantry_kg", "300");
+        EditText carriageKg = compactField((LinearLayout) gantryKg.getParent(), "X carriage kg", "tune_carriage_kg", "80");
+        EditText motorNm = compactField(row(), "Motor Nm", "tune_motor_nm", "8.5");
+        EditText gantryMotors = compactField((LinearLayout) motorNm.getParent(), "Gantry motors", "tune_gantry_motors", "1");
+        small(limitsText(0, "6000–9000 mm/min with 100–200 mm/s²"), 0xFFC8CDD3);
+        body = outer;
+        body = columns(left, 0);
+        EditText ax = stepField("X accel (mm/s²)", "tune_ax", 100, 10, 10);
+        EditText ay = stepField("Y accel (mm/s²)", "tune_ay", 100, 10, 10);
+        EditText fx = stepField("X rapid (mm/min)", "tune_fx", 3000, 250, 250);
+        EditText fy = stepField("Y rapid (mm/min)", "tune_fy", 3000, 250, 250);
+        TextView calcNote = small("", DIM);
+        TextView accelNote = small("", WARN);
+        Runnable calc = () -> {
+            double t = 2 * moveTime(2 * SQ_HALF, num(fx), num(ax)) + 2 * moveTime(2 * SQ_HALF, num(fy), num(ay));
+            double vx = num(fx) / 60, vy = num(fy) / 60;
+            calcNote.setText(String.format(Locale.US, "Calculated lap: %.1f s · full speed after %.0f mm on X, %.0f mm on Y (v² ÷ 2a).",
+                    t, num(ax) > 0 ? vx * vx / (2 * num(ax)) : 0, num(ay) > 0 ? vy * vy / (2 * num(ay)) : 0));
+            // the gantry rides the axis with the longer travel ($130 / $131), Y when unknown
+            Map<String, String> st = host.grblSettings();
+            int g = st.containsKey("$130") && st.containsKey("$131") && dnum(st, "$130") > dnum(st, "$131") ? 0 : 1;
+            double[][] est = new double[2][];
+            for (int i = 0; i < 2; i++)
+                est[i] = accelRack(i == g ? num(gantryKg) : num(carriageKg), i == g ? Math.max(1, (int) num(gantryMotors)) : 1,
+                        num(motorNm), num(i == 0 ? fx : fy));
+            accelNote.setText(String.format(Locale.US, "Estimated max accel at these rapids (50 %% torque margin): X ≈ %,d · Y ≈ %,d mm/s² "
+                            + "(100 %% torque: %,d / %,d). %s = gantry. Practical: 60–70 %% of the highest clean lap; "
+                            + "a heavy gantry usually ends at 300–500.",
+                    Math.round(est[0][1]), Math.round(est[1][1]), Math.round(est[0][0]), Math.round(est[1][0]), AX[g]));
+        };
+        TextWatcher cw = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int af) { }
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) { calc.run(); }
+        };
+        for (EditText e : new EditText[]{ax, ay, fx, fy, gantryKg, carriageKg, motorNm, gantryMotors}) e.addTextChangedListener(cw);
+        calc.run();
+
+        // write X / Y accel and max rate without running the lap, then read them back
+        paramButton("XY params", fluid, new int[]{0, 1}, () -> new int[][]{{(int) num(ax), (int) num(ay)}, {(int) num(fx), (int) num(fy)}},
+                v -> xyLimitsError(v[0], v[1]));
+
+        Button[] gps = goPauseStop();
+        Button go = gps[0], pause = gps[1], stop = gps[2];
+        TextView state = small("", WARN);
+        TextView results = small("", FG);
+        results.setTypeface(Typeface.MONOSPACE);
+        body = outer;
+        small(fluid ? "FluidNC keeps these values until it restarts. To keep them, close and reopen CNC setup (it reads them again), "
+                        + "then press Apply on that page: it saves the running config as config.yaml."
+                : "Grbl stores $110 / $111 / $120 / $121 in its EEPROM at once: the last values tried stay in use.", DIM);
+
+        // 0 = idle, 1 = going to corner 1, 2 = lap running
+        final int[] phase = {0};
+        final long[] lapStart = {0}, goAt = {0};
+        final boolean[] moved = {false}, paused = {false}, pauseSeen = {false};
+        final double[] lapCalc = {0};
+        final String[] lapLabel = {""};
+        StringBuilder history = new StringBuilder();
+
+        Runnable reset = () -> {
+            phase[0] = 0;
+            paused[0] = false;
+            pause.setText("Pause");
+            sq.target = -1;
+        };
+        Runnable watch = new Runnable() {
+            @Override public void run() {
+                if (!d.isShowing()) return;
+                sq.postDelayed(this, 100);
+                if (!host.connected()) { sq.wx = Float.NaN; sq.invalidate(); state.setText("Not connected"); return; }
+                float[] m = host.machinePos(), o = host.wco();
+                sq.wx = m[0] - o[0];
+                sq.wy = m[1] - o[1];
+                sq.invalidate();
+                String st = host.machineStatus();
+                boolean idle = st.startsWith("State: Idle");
+                if (!idle) moved[0] = true;
+                if (st.startsWith("State: Hold") || st.startsWith("State: Door")) pauseSeen[0] = true;
+                boolean atStart = Math.abs(sq.wx - SQ_CORNERS[0][0]) < 0.05 && Math.abs(sq.wy - SQ_CORNERS[0][1]) < 0.05;
+                if (phase[0] == 1) {
+                    state.setText("Going to corner 1…   " + st);
+                    // already standing at corner 1 → no motion is seen, so also accept 1.5 s of Idle there
+                    if (idle && atStart && (moved[0] || android.os.SystemClock.elapsedRealtime() - goAt[0] > 1500)) {
+                        // at corner 1: run the timed lap
+                        for (int i = 1; i <= 4; i++) host.send("G0X" + fmt(SQ_CORNERS[i % 4][0]) + "Y" + fmt(SQ_CORNERS[i % 4][1]));
+                        phase[0] = 2;
+                        moved[0] = false;
+                        pauseSeen[0] = false;
+                        lapStart[0] = android.os.SystemClock.elapsedRealtime();
+                    }
+                } else if (phase[0] == 2) {
+                    double el = (android.os.SystemClock.elapsedRealtime() - lapStart[0]) / 1000.0;
+                    // corner being approached, from the position along the lap
+                    int tgt = sq.wy < SQ_C - SQ_HALF + 0.05 && sq.wx > SQ_CORNERS[0][0] + 0.05 ? 1
+                            : sq.wx > SQ_C + SQ_HALF - 0.05 && sq.wy < SQ_C + SQ_HALF - 0.05 ? 2
+                            : sq.wy > SQ_C + SQ_HALF - 0.05 && sq.wx > SQ_C - SQ_HALF + 0.05 ? 3 : 0;
+                    sq.target = tgt;
+                    state.setText(String.format(Locale.US, "Lap %.1f s   %s", el, st));
+                    if (idle && atStart && moved[0]) {
+                        String line = String.format(Locale.US, "%s → %5.1f s (calc %.1f)%s", lapLabel[0], el, lapCalc[0],
+                                pauseSeen[0] ? "  paused, time not valid" : "");
+                        history.insert(0, line + "\n");
+                        results.setText(history);
+                        host.log("XY tuning: " + line);
+                        state.setText("Lap done. " + st);
+                        reset.run();
+                    }
+                }
+            }
+        };
+        sq.post(watch);                       // runs once the page is shown (the view is attached then)
+
+        go.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Connect to the board first"); return; }
+            if (host.busy()) { toast("Stop the running job first"); return; }
+            if (phase[0] != 0) { toast("The lap is still running – Stop it first"); return; }
+            if (!host.machineStatus().startsWith("State: Idle")) { toast("The machine must be Idle – home or unlock ($X) first"); return; }
+            int[] acc = {(int) num(ax), (int) num(ay)}, rate = {(int) num(fx), (int) num(fy)};
+            Map<String, String> s = host.grblSettings();
+            String bad = xyLimitsError(acc, rate);
+            if (bad != null) { toast(bad); return; }
+            // WCS Z50, but not above the home position (soft limits / the Z top)
+            float[] o = host.wco();
+            boolean zClamp = o[2] + TUNE_Z > -1;
+            String zMove = zClamp ? "G53G0Z-1" : "G0Z" + fmt(TUNE_Z);
+            java.util.List<String> cmds = paramCmds(fluid, new int[]{0, 1}, acc, rate);
+            StringBuilder was = new StringBuilder();
+            for (int i = 0; i < 2; i++) if (s.containsKey("$11" + i))
+                was.append(AX[i]).append(" now: accel ").append(s.get("$12" + i)).append(", rapid ").append(s.get("$11" + i)).append('\n');
+            String moves = "G21G90G54\n" + zMove + "\nG0X" + fmt(SQ_CORNERS[0][0]) + "Y" + fmt(SQ_CORNERS[0][1]);
+            new android.app.AlertDialog.Builder(a)
+                    .setTitle("Run the tuning lap?")
+                    .setMessage(was + String.join("\n", cmds) + "\n\n" + moves + "\nthen the lap 2 → 3 → 4 → 1 at G0."
+                            + (zClamp ? "\n\nWCS Z50 is above the Z home position, so Z goes to machine Z−1 instead." : "")
+                            + "\n\nNo tool in the wood: keep the bed clear and a hand near E-STOP.")
+                    .setPositiveButton("Go", (dlg, which) -> {
+                        for (String c : cmds) host.send(c);
+                        if (fluid) for (char c : new char[]{'x', 'y'}) {           // read back so the page shows the new values
+                            host.send("$/axes/" + c + "/acceleration_mm_per_sec2");
+                            host.send("$/axes/" + c + "/max_rate_mm_per_min");
+                        }
+                        for (String mv : moves.split("\n")) host.send(mv);
+                        lapLabel[0] = String.format(Locale.US, "X a%-4d F%-5d  Y a%-4d F%-5d", acc[0], rate[0], acc[1], rate[1]);
+                        lapCalc[0] = 2 * moveTime(2 * SQ_HALF, rate[0], acc[0]) + 2 * moveTime(2 * SQ_HALF, rate[1], acc[1]);
+                        host.log("XY tuning: " + String.join(" ", cmds) + ", lap round WCS (450…750, 450…750)");
+                        moved[0] = false;
+                        goAt[0] = android.os.SystemClock.elapsedRealtime();
+                        sq.target = 0;
+                        phase[0] = 1;
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        pause.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Not connected"); return; }
+            if (paused[0]) { host.resume(); paused[0] = false; pause.setText("Pause"); }
+            else { host.hold(); paused[0] = true; pause.setText("Resume"); }
+        });
+        stop.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Not connected"); return; }
+            // hold first so the reset comes after the stop and the position is kept; reset after 2 s at the latest
+            host.hold();
+            final long t0 = android.os.SystemClock.elapsedRealtime();
+            Runnable waitStop = new Runnable() {
+                @Override public void run() {
+                    String st = host.machineStatus();
+                    if (st.startsWith("State: Hold:0") || st.startsWith("State: Idle")
+                            || android.os.SystemClock.elapsedRealtime() - t0 > 2000) {
+                        host.estop();
+                        host.log("XY tuning: stopped");
+                        state.setText("Stopped.");
+                        reset.run();
+                    } else stop.postDelayed(this, 50);
+                }
+            };
+            stop.post(waitStop);
+        });
+    }
+
+    /** Range check of the X / Y accel and rapid; null when both axes are fine. */
+    private String xyLimitsError(int[] acc, int[] rate) {
+        Map<String, String> s = host.grblSettings();
+        int pulses;
+        try { pulses = Integer.parseInt(host.prefs().getString("cnc_pulses", "1600").trim()); } catch (NumberFormatException e) { pulses = 1600; }
+        for (int i = 0; i < 2; i++) {
+            double steps = s.containsKey("$10" + i) ? dnum(s, "$10" + i) : 0;
+            int max = steps > 0 ? maxRate(steps, pulses) : 20000;
+            if (acc[i] < 10 || acc[i] > 2000) return AX[i] + " accel must be 10 – 2000 mm/s²";
+            if (rate[i] < 250 || rate[i] > max) return AX[i] + " rapid must be 250 – " + max + " mm/min";
+        }
+        return null;
+    }
+
+    /** $12n / $11n (accel / max rate) for each axis n, or the FluidNC $/axes/… equivalents. */
+    private static java.util.List<String> paramCmds(boolean fluid, int[] axes, int[] acc, int[] rate) {
+        java.util.List<String> cmds = new java.util.ArrayList<>();
+        for (int k = 0; k < axes.length; k++) {
+            int i = axes[k];
+            if (fluid) {
+                cmds.add("$/axes/" + "xyz".charAt(i) + "/acceleration_mm_per_sec2=" + acc[k]);
+                cmds.add("$/axes/" + "xyz".charAt(i) + "/max_rate_mm_per_min=" + rate[k]);
+            } else {
+                cmds.add("$12" + i + "=" + acc[k]);
+                cmds.add("$11" + i + "=" + rate[k]);
+            }
+        }
+        return cmds;
+    }
+
+    interface Values { int[][] get(); }                 // {accel per axis, rate per axis}
+    interface Check { String error(int[][] values); }   // null = fine
+
+    /**
+     * "Update GRBL params" button with its status text: writes the accel and max rate of axes one command at a time,
+     * then reads them back and marks each axis ✓ / ✗. tag prefixes the log lines.
+     */
+    private void paramButton(String tag, boolean fluid, int[] axes, Values values, Check check) {
+        Button update = button("Update GRBL params");
+        update.setTextColor(GOOD);
+        update.setTextSize(15);
+        body.addView(update, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(52)));
+        TextView paramState = small("", DIM);
+        paramState.setTypeface(Typeface.MONOSPACE);
+        update.setOnClickListener(v -> {
+            if (!host.connected()) { paramState.setTextColor(RED); paramState.setText("GRBL: not connected – connect to the board first"); return; }
+            if (host.busy()) { paramState.setTextColor(WARN); paramState.setText("GRBL: connected, a job is running – stop it first"); return; }
+            int[][] val = values.get();
+            int[] acc = val[0], rate = val[1];
+            String bad = check.error(val);
+            if (bad != null) { paramState.setTextColor(RED); paramState.setText("Not sent: " + bad); return; }
+            java.util.List<String> cmds = paramCmds(fluid, axes, acc, rate);
+            update.setEnabled(false);
+            paramState.setTextColor(WARN);
+            paramState.setText("GRBL: connected (" + host.machineStatus().replaceFirst("^State: (\\S+).*", "$1") + ")\nWriting 1/" + cmds.size() + "…");
+            host.log(tag + ": " + String.join(" ", cmds));
+            writeParams(cmds, 0, paramState, err -> {
+                if (err != null) {
+                    update.setEnabled(true);
+                    paramState.setTextColor(RED);
+                    paramState.setText(paramState.getText() + "\n✗ " + err);
+                    host.log(tag + ": " + err);
+                    return;
+                }
+                paramState.setText(paramState.getText() + "\nParams updated. Reading back…");
+                readParams(fluid, readCmds(axes), new java.util.ArrayList<>(), 0, read -> {
+                    update.setEnabled(true);
+                    if (read == null) {
+                        paramState.setTextColor(RED);
+                        paramState.setText(paramState.getText() + "\n✗ No reply to the read-back – try again");
+                        return;
+                    }
+                    StringBuilder sb = new StringBuilder(paramState.getText()).append('\n');
+                    boolean ok = true;
+                    for (int k = 0; k < axes.length; k++) {
+                        int i = axes[k];
+                        String ra = read.get("$12" + i), rr = read.get("$11" + i);
+                        boolean m = ra != null && rr != null && Math.abs(Double.parseDouble(ra) - acc[k]) < 0.01
+                                && Math.abs(Double.parseDouble(rr) - rate[k]) < 0.01;
+                        ok &= m;
+                        sb.append(String.format(Locale.US, "%s  accel $12%d = %-9s rapid $11%d = %-9s %s%n", AX[i],
+                                i, ra == null ? "?" : ra, i, rr == null ? "?" : rr, m ? "✓" : "✗ (sent a" + acc[k] + " F" + rate[k] + ")"));
+                    }
+                    sb.append(ok ? "✓ Confirmed: the board reads back the new values." : "✗ The read-back differs from what was sent.");
+                    paramState.setTextColor(ok ? GOOD : RED);
+                    paramState.setText(sb);
+                    host.log(tag + ": read back " + read + (ok ? " – confirmed" : " – MISMATCH"));
+                });
+            });
+        });
+    }
+
+    interface Err { void done(String error); }
+
+    /** Sends cmds one by one, each waiting for its ok; done gets null, or what went wrong. */
+    private void writeParams(java.util.List<String> cmds, int i, TextView state, Err done) {
+        if (i == cmds.size()) { done.done(null); return; }
+        if (!host.connected()) { done.done("GRBL disconnected after " + i + "/" + cmds.size()); return; }
+        host.capture(cmds.get(i), lines -> {
+            if (lines == null) { done.done(cmds.get(i) + " – error or no ok from the board (busy?)"); return; }
+            state.setText(state.getText() + "\n" + cmds.get(i) + "  ok");
+            writeParams(cmds, i + 1, state, done);
+        });
+    }
+
+    interface Read { void got(Map<String, String> settings); }
+
+    /** FluidNC items that read back the accel and max rate of axes. */
+    private static String[] readCmds(int[] axes) {
+        String[] r = new String[2 * axes.length];
+        for (int k = 0; k < axes.length; k++) {
+            r[2 * k] = "$/axes/" + "xyz".charAt(axes[k]) + "/acceleration_mm_per_sec2";
+            r[2 * k + 1] = "$/axes/" + "xyz".charAt(axes[k]) + "/max_rate_mm_per_min";
+        }
+        return r;
+    }
+
+    /** Reads $11n / $12n back ($$, or the FluidNC items); also refreshes the settings map. */
+    private void readParams(boolean fluid, String[] items, java.util.List<String> got, int i, Read done) {
+        if (!fluid || i == items.length) {
+            if (fluid) { parseParams(got, done); return; }
+            host.capture("$$", lines -> { if (lines == null) done.got(null); else parseParams(lines, done); });
+            return;
+        }
+        host.capture(items[i], lines -> {
+            if (lines == null) { done.got(null); return; }
+            got.addAll(lines);
+            readParams(true, items, got, i + 1, done);
+        });
+    }
+
+    private void parseParams(java.util.List<String> lines, Read done) {
+        Map<String, String> out = new java.util.HashMap<>();
+        for (String l : lines) {
+            String g = MainActivity.fluidToGrbl(l.trim());
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("^\\$(\\d+)=([-0-9.]+)\\s*$").matcher(g != null ? g : l.trim());
+            if (!m.matches()) continue;
+            host.grblSettings().put("$" + m.group(1), m.group(2));
+            out.put("$" + m.group(1), m.group(2));
+        }
+        done.got(out);
+    }
+
+    /** Range check of the Z accel and rapid; null when fine. */
+    private String zLimitsError(int acc, int rate) {
+        Map<String, String> s = host.grblSettings();
+        int pulses;
+        try { pulses = Integer.parseInt(host.prefs().getString("cnc_pulses", "1600").trim()); } catch (NumberFormatException e) { pulses = 1600; }
+        int max = s.containsKey("$102") ? maxRate(dnum(s, "$102"), pulses) : 3000;
+        if (acc < 10 || acc > 1000) return "Z accel must be 10 – 1000 mm/s²";
+        if (rate < 25 || rate > max) return "Z rapid must be 25 – " + max + " mm/min";
+        return null;
+    }
+
+    // ---------------------------------------------------------------- Z axis tuning
+
+    /** Z tuning stroke in WCS: down end, top end. */
+    private static final double Z_LO = 50, Z_HI = 150;
+
+    /** The Z stroke as a vertical line with the tool's live Z. */
+    private final class ZLineView extends View {
+        float wz = Float.NaN;
+        int target = -1;                      // 0 = going down to Z50, 1 = going up to Z150
+        private final android.graphics.Paint pt = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        ZLineView() { super(a); setBackgroundColor(CELL); }
+
+        @Override protected void onDraw(android.graphics.Canvas c) {
+            float w = getWidth(), h = getHeight();
+            double lo = Z_LO - 20, span = Z_HI - Z_LO + 40;      // WCS Z30…170, up = up
+            float k = (float) (h / span), cx = w / 2;
+            float yHi = (float) (lo + span - Z_HI) * k, yLo = (float) (lo + span - Z_LO) * k;
+            pt.setStyle(android.graphics.Paint.Style.STROKE);
+            pt.setStrokeWidth(px(3));
+            pt.setColor(GOOD);
+            c.drawLine(cx, yHi, cx, yLo, pt);
+            pt.setStyle(android.graphics.Paint.Style.FILL);
+            pt.setTextSize(px(13));
+            String[] labels = {"Z" + (int) Z_LO + " (down)", "Z" + (int) Z_HI + " (top)"};
+            float[] ys = {yLo, yHi};
+            for (int i = 0; i < 2; i++) {
+                pt.setColor(i == target ? WARN : FG);
+                c.drawCircle(cx, ys[i], px(5), pt);
+                c.drawText(labels[i], cx + px(14), ys[i] + px(5), pt);
+            }
+            pt.setColor(DIM);
+            String len = (int) (Z_HI - Z_LO) + " mm stroke, WCS";
+            c.drawText(len, cx - pt.measureText(len) - px(14), (yHi + yLo) / 2, pt);
+            if (!Float.isNaN(wz)) {
+                float ty = (float) Math.max(0, Math.min(span, lo + span - wz)) * k;
+                pt.setColor(0xFFFF5555);
+                c.drawCircle(cx, ty, px(7), pt);
+            }
+        }
+    }
+
+    /**
+     * Z tuning: writes Z's accel and max rate (G0 speed), goes to WCS Z50 and runs one G0 stroke
+     * Z50 → Z150 → Z50 at the current X / Y, timed.
+     */
+    private void zTuning(Dialog d) {
+        final boolean fluid = MainActivity.BOARD_FLUIDNC.equals(host.board());
+        small("Go writes the Z accel and rapid rate below, goes to WCS Z50 and runs one timed G0 stroke Z50 → Z150 → Z50 "
+                + "where X / Y stand now. WCS Z150 must lie below the Z home position (G54 Z at least 151 mm below it). "
+                + "A Z that misses steps ends away from its mark, and a lost Z can drop the spindle: stay well below the limit.", 0xFFC8CDD3);
+        ZLineView zl = new ZLineView();
+        LinearLayout outer = body;
+        LinearLayout left = vcol();
+        left.addView(zl, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(240)));
+        body = left;
+        EditText zKg = compactField(row(), "Z moving kg", "tune_z_kg", "40");
+        EditText motorNm = compactField((LinearLayout) zKg.getParent(), "Motor Nm", "tune_motor_nm", "8.5");
+        small(limitsText(2, "1500–2500 mm/min with a lower accel than X / Y (Z lifts the spindle)"), 0xFFC8CDD3);
+        body = outer;
+        body = columns(left, 0);
+        EditText az = stepField("Z accel (mm/s²)", "tune_az", 30, 10, 10);
+        EditText fz = stepField("Z rapid (mm/min)", "tune_fz", 500, 25, 25);
+        TextView calcNote = small("", DIM);
+        TextView accelNote = small("", WARN);
+        Runnable calc = () -> {
+            double v = num(fz) / 60;
+            calcNote.setText(String.format(Locale.US, "Calculated stroke: %.1f s. Full speed is reached after %.1f mm (v² ÷ 2a).",
+                    2 * moveTime(Z_HI - Z_LO, num(fz), num(az)), num(az) > 0 ? v * v / (2 * num(az)) : 0));
+            double[] est = accelZ(num(zKg), num(motorNm), num(fz));
+            accelNote.setText(String.format(Locale.US, "Estimated max accel going up at this rapid (50 %% torque margin): ≈ %,d mm/s² "
+                            + "(100 %% torque: %,d). The motor's own rotor inertia dominates on a 5 mm-lead screw. "
+                            + "Practical: 60–70 %% of the highest clean stroke, usually 200–400.",
+                    Math.round(est[1]), Math.round(est[0])));
+        };
+        TextWatcher cw = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int af) { }
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) { }
+            @Override public void afterTextChanged(Editable s) { calc.run(); }
+        };
+        for (EditText e : new EditText[]{az, fz, zKg, motorNm}) e.addTextChangedListener(cw);
+        calc.run();
+
+        // write Z accel and max rate without running the stroke, then read them back
+        paramButton("Z params", fluid, new int[]{2}, () -> new int[][]{{(int) num(az)}, {(int) num(fz)}},
+                v -> zLimitsError(v[0][0], v[1][0]));
+
+        Button[] gps = goPauseStop();
+        Button go = gps[0], pause = gps[1], stop = gps[2];
+        TextView state = small("", WARN);
+        TextView results = small("", FG);
+        results.setTypeface(Typeface.MONOSPACE);
+        body = outer;
+        small(fluid ? "FluidNC keeps these values until it restarts; to keep them, reopen CNC setup and press Apply."
+                : "Grbl stores $112 / $122 in its EEPROM at once: the last values tried stay in use.", DIM);
+
+        // 0 = idle, 1 = going to Z50, 2 = stroke running
+        final int[] phase = {0};
+        final long[] strokeStart = {0}, goAt = {0};
+        final boolean[] moved = {false}, paused = {false}, pauseSeen = {false};
+        final double[] strokeCalc = {0};
+        final String[] strokeLabel = {""};
+        StringBuilder history = new StringBuilder();
+        Runnable reset = () -> {
+            phase[0] = 0;
+            paused[0] = false;
+            pause.setText("Pause");
+            zl.target = -1;
+        };
+        Runnable watch = new Runnable() {
+            @Override public void run() {
+                if (!d.isShowing()) return;
+                zl.postDelayed(this, 100);
+                if (!host.connected()) { zl.wz = Float.NaN; zl.invalidate(); state.setText("Not connected"); return; }
+                zl.wz = host.machinePos()[2] - host.wco()[2];
+                String st = host.machineStatus();
+                boolean idle = st.startsWith("State: Idle");
+                if (!idle) moved[0] = true;
+                if (st.startsWith("State: Hold") || st.startsWith("State: Door")) pauseSeen[0] = true;
+                boolean atLo = Math.abs(zl.wz - Z_LO) < 0.05;
+                if (phase[0] == 1) {
+                    state.setText("Going to Z" + (int) Z_LO + "…   " + st);
+                    // already standing at Z50 → no motion is seen, so also accept 1.5 s of Idle there
+                    if (idle && atLo && (moved[0] || android.os.SystemClock.elapsedRealtime() - goAt[0] > 1500)) {
+                        host.send("G0Z" + fmt(Z_HI));
+                        host.send("G0Z" + fmt(Z_LO));
+                        zl.target = 1;
+                        phase[0] = 2;
+                        moved[0] = false;
+                        pauseSeen[0] = false;
+                        strokeStart[0] = android.os.SystemClock.elapsedRealtime();
+                    }
+                } else if (phase[0] == 2) {
+                    double el = (android.os.SystemClock.elapsedRealtime() - strokeStart[0]) / 1000.0;
+                    if (zl.wz > Z_HI - 0.05) zl.target = 0;
+                    else if (zl.target != 0) zl.target = 1;
+                    state.setText(String.format(Locale.US, "Stroke %.1f s   %s", el, st));
+                    if (idle && atLo && moved[0]) {
+                        String line = String.format(Locale.US, "%s → %5.1f s (calc %.1f)%s", strokeLabel[0], el, strokeCalc[0],
+                                pauseSeen[0] ? "  paused, time not valid" : "");
+                        history.insert(0, line + "\n");
+                        results.setText(history);
+                        host.log("Z tuning: " + line);
+                        state.setText("Stroke done. " + st);
+                        reset.run();
+                    }
+                }
+                zl.invalidate();
+            }
+        };
+        zl.post(watch);                       // runs once the page is shown (the view is attached then)
+
+        go.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Connect to the board first"); return; }
+            if (host.busy()) { toast("Stop the running job first"); return; }
+            if (phase[0] != 0) { toast("The stroke is still running – Stop it first"); return; }
+            if (!host.machineStatus().startsWith("State: Idle")) { toast("The machine must be Idle – home or unlock ($X) first"); return; }
+            int acc = (int) num(az), rate = (int) num(fz);
+            Map<String, String> s = host.grblSettings();
+            String bad = zLimitsError(acc, rate);
+            if (bad != null) { toast(bad); return; }
+            float[] o = host.wco();
+            if (o[2] + Z_HI > -1) {
+                new android.app.AlertDialog.Builder(a)
+                        .setTitle("Z150 is out of reach")
+                        .setMessage(String.format(Locale.US, "G54 Z is machine Z %.3f, so WCS Z%d is machine Z %.3f – above the Z home "
+                                + "position (machine Z 0). Set G54 Z to machine Z %.0f or lower (Work offset tab), then Go again.",
+                                o[2], (int) Z_HI, o[2] + Z_HI, -1 - Z_HI))
+                        .setPositiveButton("OK", null)
+                        .show();
+                return;
+            }
+            java.util.List<String> cmds = paramCmds(fluid, new int[]{2}, new int[]{acc}, new int[]{rate});
+            String was = s.containsKey("$112") ? "Z now: accel " + s.get("$122") + ", rapid " + s.get("$112") + "\n" : "";
+            new android.app.AlertDialog.Builder(a)
+                    .setTitle("Run the Z stroke?")
+                    .setMessage(was + String.join("\n", cmds) + "\n\nG21G90G54\nG0Z" + fmt(Z_LO)
+                            + "\nthen G0 Z" + fmt(Z_HI) + " → Z" + fmt(Z_LO) + " at the current X / Y."
+                            + "\n\nCheck that the tool is clear of the bed and clamps at Z" + fmt(Z_LO) + "; keep a hand near E-STOP.")
+                    .setPositiveButton("Go", (dlg, which) -> {
+                        for (String c : cmds) host.send(c);
+                        if (fluid) {                  // read back so the page shows the new values
+                            host.send("$/axes/z/acceleration_mm_per_sec2");
+                            host.send("$/axes/z/max_rate_mm_per_min");
+                        }
+                        host.send("G21G90G54");
+                        host.send("G0Z" + fmt(Z_LO));
+                        strokeLabel[0] = String.format(Locale.US, "Z a%-4d F%-5d", acc, rate);
+                        strokeCalc[0] = 2 * moveTime(Z_HI - Z_LO, rate, acc);
+                        host.log("Z tuning: " + String.join(" ", cmds) + ", stroke WCS Z50 → Z150 → Z50");
+                        moved[0] = false;
+                        goAt[0] = android.os.SystemClock.elapsedRealtime();
+                        zl.target = 0;
+                        phase[0] = 1;
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        pause.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Not connected"); return; }
+            if (paused[0]) { host.resume(); paused[0] = false; pause.setText("Pause"); }
+            else { host.hold(); paused[0] = true; pause.setText("Resume"); }
+        });
+        stop.setOnClickListener(v -> {
+            if (!host.connected()) { toast("Not connected"); return; }
+            // hold first so the reset comes after the stop and the position is kept; reset after 2 s at the latest
+            host.hold();
+            final long t0 = android.os.SystemClock.elapsedRealtime();
+            Runnable waitStop = new Runnable() {
+                @Override public void run() {
+                    String st = host.machineStatus();
+                    if (st.startsWith("State: Hold:0") || st.startsWith("State: Idle")
+                            || android.os.SystemClock.elapsedRealtime() - t0 > 2000) {
+                        host.estop();
+                        host.log("Z tuning: stopped");
+                        state.setText("Stopped.");
+                        reset.run();
+                    } else stop.postDelayed(this, 50);
+                }
+            };
+            stop.post(waitStop);
+        });
     }
 
     private static String fmt(double v) {

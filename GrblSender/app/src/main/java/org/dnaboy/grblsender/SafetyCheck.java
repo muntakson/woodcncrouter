@@ -32,10 +32,12 @@ import java.util.regex.Pattern;
  */
 final class SafetyCheck {
 
-    /** Plywood sheet on the bed: the 2450 mm side runs along Y (X travel is only 1950 mm), corner at WCS X0 Y0. */
-    static final float SHEET_X = 1250, SHEET_Y = 2450;
+    /** Plywood sheet on the bed: 1220 x 2440, the 2440 mm side along Y, corner at WCS X0 Y0. */
+    static final float SHEET_X = 1220, SHEET_Y = 2440;
     private static final float MARGIN_WARN = 20;     // mm from the cut edge to a sheet edge
     private static final float CLAMP_R = 25;         // keep-out radius around a marked clamp/screw, mm
+    static final float EDGE_CLAMP_TOL = 10;          // edge clamps: the reach shown holds this far either side of the Y given, mm
+    static final int EDGE_CLAMPS = 6;                // edge clamps suggested per side
     private static final float SPOIL_WARN = 2, SPOIL_ERR = 5;
 
     interface Host {
@@ -566,6 +568,24 @@ final class SafetyCheck {
             info(mc, "Cut extents (tool centre): X " + f1(r.cutMinX) + " … " + f1(r.cutMaxX) + " · Y " + f1(r.cutMinY) + " … " + f1(r.cutMaxY)
                     + (rad > 0 ? "; clearances are to the cut edge (± " + f3(rad) + " mm)" : "; to the tool centre"));
         } else info(mc, "No cutting moves below Z0");
+        float edgeW = prefF(pr, "safety_edge_clamp_w", 28);
+        float[][][] spots = r.hasCut() ? edgeClampSpots(r, edgeW, clampH + 5) : null;
+        if (spots != null) {
+            info(mc, "Edge clamps, " + f0(edgeW) + " mm wide, " + EDGE_CLAMPS + " per side – Y = clamp centre from the front (Y0) edge; "
+                    + "→ = how far in from the sheet edge it may reach (still true " + f0(EDGE_CLAMP_TOL) + " mm either side of that Y):");
+            String[] sides = {"Left (X0)", "Right (X" + f0(SHEET_X) + ")"};
+            for (int sd = 0; sd < 2; sd++) {
+                StringBuilder t = new StringBuilder(sides[sd]).append(":");
+                float least = Float.MAX_VALUE;
+                for (float[] sp : spots[sd]) {
+                    t.append("   Y ").append(f0(sp[0])).append(" → ").append(f0(sp[1]));
+                    least = Math.min(least, sp[1]);
+                }
+                value(mc, t.toString());
+                if (least < 15) warn(mc, sides[sd] + ": a clamp has only " + f0(least) + " mm to grip – use a screw there or move the sheet");
+            }
+            info(mc, "Keep each clamp jaw a few mm short of its → value. Y and → are also drawn on the sheet.");
+        }
         boolean[] clampBad = new boolean[clamps.size()];
         if (clamps.isEmpty()) warn(mc, "No clamps/screws marked – tap the sheet where each one is");
         else {
@@ -613,8 +633,9 @@ final class SafetyCheck {
         field(sc, "Spindle speed (rpm, MK300 fixed)", "safety_rpm", rpm);
         field(sc, "Bit flutes", "safety_flutes", flutes);
         field(sc, "Clamp / screw head height (mm)", "safety_clamp_h", clampH);
+        field(sc, "Edge clamp width along the edge (mm)", "safety_edge_clamp_w", edgeW);
 
-        SheetView sheet = new SheetView(c, r, clamps, clampBad, (x, y) -> { toggleClamp(pr, clamps, x, y); render(); });
+        SheetView sheet = new SheetView(c, r, clamps, clampBad, spots, edgeW, (x, y) -> { toggleClamp(pr, clamps, x, y); render(); });
         right.addView(sheet, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         int nErr = 0;
@@ -834,6 +855,64 @@ final class SafetyCheck {
         return new float[]{r.cutMinX - rad, SHEET_X - (r.cutMaxX + rad), r.cutMinY - rad, SHEET_Y - (r.cutMaxY + rad)};
     }
 
+    /**
+     * Best edge-clamp spots: for the left (X0) and right edge, in each of EDGE_CLAMPS equal stretches of the sheet length,
+     * the Y (clamp centre) where a clamp of width w along the edge can reach farthest inward, even when
+     * it lands EDGE_CLAMP_TOL off that Y. Obstacles are the cut edge and rapids lower than lowZ, both widened by the tool radius.
+     * Returns [side][stretch] = {y, free inward distance from the sheet edge}.
+     */
+    static float[][][] edgeClampSpots(Report r, float w, float lowZ) {
+        int n = (int) SHEET_Y + 1;
+        float[] left = new float[n], right = new float[n];   // per 1 mm of Y: nearest obstacle from each edge
+        java.util.Arrays.fill(left, SHEET_X);
+        java.util.Arrays.fill(right, SHEET_X);
+        float rad = r.toolDiameter / 2;
+        for (int i = 0; i < r.cutSegCount; i++) {
+            markSeg(left, right, r.cutSegs[i * 4], r.cutSegs[i * 4 + 1], r.cutSegs[i * 4 + 2], r.cutSegs[i * 4 + 3], rad);
+        }
+        for (int i = 0; i < r.rapidSegCount; i++) {
+            if (r.rapidSegs[i * 5 + 4] >= lowZ) continue;
+            markSeg(left, right, r.rapidSegs[i * 5], r.rapidSegs[i * 5 + 1], r.rapidSegs[i * 5 + 2], r.rapidSegs[i * 5 + 3], rad);
+        }
+        int half = Math.round(w / 2 + EDGE_CLAMP_TOL);
+        float[][][] out = new float[2][EDGE_CLAMPS][];
+        for (int side = 0; side < 2; side++) {
+            float[] edge = side == 0 ? left : right;
+            int lo = half, hi = n - 1 - half;
+            for (int k = 0; k < EDGE_CLAMPS; k++) {
+                int a = lo + (hi - lo) * k / EDGE_CLAMPS, b = lo + (hi - lo) * (k + 1) / EDGE_CLAMPS, mid = (a + b) / 2;
+                float[] reach = new float[b - a + 1];
+                float best = -Float.MAX_VALUE;
+                for (int y = a; y <= b; y++) {
+                    float free = SHEET_X;
+                    for (int j = y - half; j <= y + half; j++) free = Math.min(free, edge[j]);
+                    reach[y - a] = free;
+                    best = Math.max(best, free);
+                }
+                // of the spots within 1 mm of the best reach, the one nearest the middle of the stretch
+                int bestY = -1;
+                for (int y = a; y <= b; y++) {
+                    if (reach[y - a] >= best - 1 && (bestY < 0 || Math.abs(y - mid) < Math.abs(bestY - mid))) bestY = y;
+                }
+                out[side][k] = new float[]{bestY, Math.max(0, reach[bestY - a])};
+            }
+        }
+        return out;
+    }
+
+    /** Walk a segment in ≤1 mm steps; each point blocks Y ± rad at X ∓ rad from either edge. */
+    private static void markSeg(float[] left, float[] right, float x0, float y0, float x1, float y1, float rad) {
+        int steps = Math.max(1, (int) Math.ceil(Math.hypot(x1 - x0, y1 - y0)));
+        for (int s = 0; s <= steps; s++) {
+            float x = x0 + (x1 - x0) * s / steps, y = y0 + (y1 - y0) * s / steps;
+            int j0 = Math.max(0, (int) Math.floor(y - rad)), j1 = Math.min(left.length - 1, (int) Math.ceil(y + rad));
+            for (int j = j0; j <= j1; j++) {
+                left[j] = Math.min(left[j], x - rad);
+                right[j] = Math.min(right[j], SHEET_X - (x + rad));
+            }
+        }
+    }
+
     static String marginText(float m) {
         return m < 0 ? f1(-m) + " mm OFF the sheet" : f1(m) + " mm" + (m < MARGIN_WARN ? " (tight)" : "");
     }
@@ -919,6 +998,8 @@ final class SafetyCheck {
         private final Report r;
         private final List<float[]> clamps;
         private final boolean[] clampBad;
+        private final float[][][] spots;   // edge clamps [side][k] = {y, reach}, or null
+        private final float edgeW;
         private final Tap tap;
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), stroke = new Paint(Paint.ANTI_ALIAS_FLAG),
                 path = new Paint(), box = new Paint(Paint.ANTI_ALIAS_FLAG), txt = new Paint(Paint.ANTI_ALIAS_FLAG),
@@ -927,11 +1008,13 @@ final class SafetyCheck {
         private float ox, oy, s;
         private float downX = Float.NaN, downY;
 
-        SheetView(Context c, Report r, List<float[]> clamps, boolean[] clampBad, Tap tap) {
+        SheetView(Context c, Report r, List<float[]> clamps, boolean[] clampBad, float[][][] spots, float edgeW, Tap tap) {
             super(c);
             this.r = r;
             this.clamps = clamps;
             this.clampBad = clampBad;
+            this.spots = spots;
+            this.edgeW = edgeW;
             this.tap = tap;
             density = c.getResources().getDisplayMetrics().density;
             fill.setColor(0xFF5A4630);
@@ -986,6 +1069,29 @@ final class SafetyCheck {
             for (int i = 0; i < r.cutSegCount; i++) {
                 cv.drawLine(ox + r.cutSegs[i * 4] * s, oy - r.cutSegs[i * 4 + 1] * s,
                         ox + r.cutSegs[i * 4 + 2] * s, oy - r.cutSegs[i * 4 + 3] * s, path);
+            }
+
+            if (spots != null) {
+                // edge clamps: a bar from the sheet edge inward as far as it may reach, labelled "Y … → …"
+                for (int sd = 0; sd < 2; sd++) {
+                    for (float[] sp : spots[sd]) {
+                        int col = sp[1] < 15 ? Ui.WARN : Ui.OK;
+                        float x0 = sd == 0 ? sheet.left : sheet.right - sp[1] * s, x1 = sd == 0 ? sheet.left + sp[1] * s : sheet.right;
+                        RectF bar = new RectF(x0, oy - (sp[0] + edgeW / 2) * s, x1, oy - (sp[0] - edgeW / 2) * s);
+                        clamp.setStyle(Paint.Style.FILL);
+                        clamp.setColor((col & 0x00FFFFFF) | 0x66000000);
+                        cv.drawRect(bar, clamp);
+                        clamp.setStyle(Paint.Style.STROKE);
+                        clamp.setColor(col);
+                        cv.drawRect(bar, clamp);
+                        String label = "Y" + f0(sp[0]) + " → " + f0(sp[1]);
+                        txt.setColor(col);
+                        txt.setTextAlign(sd == 0 ? Paint.Align.RIGHT : Paint.Align.LEFT);
+                        cv.drawText(label, sd == 0 ? sheet.left - 4 * density : sheet.right + 4 * density,
+                                bar.centerY() + txt.getTextSize() / 3, txt);
+                    }
+                }
+                txt.setTextAlign(Paint.Align.LEFT);
             }
 
             for (int k = 0; k < clamps.size(); k++) {

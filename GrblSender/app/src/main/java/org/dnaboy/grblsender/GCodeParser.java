@@ -56,6 +56,13 @@ final class GCodeParser {
         boolean limitsFromMachine;   // estimate used the connected machine's $ settings
         double cappedRate;           // the machine's XY max rate (mm/min) used in the estimate
         int tooLong;
+        /**
+         * Parts named by "(Part n/N …)" comments: number, label point (centre of its cuts), first / last program line,
+         * section (a new section starts where the numbering starts again, e.g. holes then profiles).
+         */
+        int[] partNo = new int[0], partSection = new int[0];
+        float[] partXY = new float[0];
+        int[] partFirstLine = new int[0], partLastLine = new int[0];
         boolean hasBounds() { return minX <= maxX; }
 
         /** Start/end point of program line {@code lineIdx}'s last segment, or null. */
@@ -92,7 +99,8 @@ final class GCodeParser {
             Pattern.compile("TOOL/MILL\\s*,\\s*(\\d*\\.?\\d+)", Pattern.CASE_INSENSITIVE),
             // "Endmill 3.175mm", "3mm end mill", "1/8in bit"
             Pattern.compile("(\\d+/\\d+|\\d*\\.?\\d+)\\s*(MM|IN|\")\\s*(?:flat|ball|v-?bit|end\\s*mill|endmill|bit|cutter)", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("(?:end\\s*mill|endmill|bit|cutter)\\s*(\\d+/\\d+|\\d*\\.?\\d+)\\s*(MM|IN|\")", Pattern.CASE_INSENSITIVE),
+            // ... but not "endmill 50 mm flute" / "bit 38 mm long": that is a length, not the diameter
+            Pattern.compile("(?:end\\s*mill|endmill|bit|cutter)\\s*(\\d+/\\d+|\\d*\\.?\\d+)\\s*(MM|IN|\")(?!\\s*(?:flute|long|length|loc|oal|reach|shank|stick))", Pattern.CASE_INSENSITIVE),
     };
 
     /**
@@ -112,6 +120,7 @@ final class GCodeParser {
         double feedRate = 0;
         boolean toolFound = false;
         StringBuilder comments = new StringBuilder();
+        IntList partAt = new IntList(), partNum = new IntList();
 
         String[] rows = text.split("\n", -1);
         TimeEstimator est = new TimeEstimator(lim, rows.length);
@@ -129,6 +138,8 @@ final class GCodeParser {
                     toolFound = true;
                 }
             }
+            Matcher pm = comments.length() > 0 ? PART.matcher(comments) : null;
+            if (pm != null && pm.find()) { partAt.add(r.lines.size()); partNum.add(Integer.parseInt(pm.group(1))); }
             comments.setLength(0);
             String clean = code.replaceAll("\\s+", "").toUpperCase(Locale.US);
             if (clean.isEmpty() || clean.equals("%")) continue;
@@ -222,6 +233,7 @@ final class GCodeParser {
         r.feedCount = r.feedPts.length / 4;
         r.rapidCount = r.rapidPts.length / 4;
         dedupe(r);
+        parts(r, partAt.toArray(), partNum.toArray());
         r.lineEndSec = est.finish();
         r.estSeconds = r.lineEndSec[r.lineEndSec.length - 1];
         r.feedTimeMin = r.estSeconds / 60.0;
@@ -230,6 +242,50 @@ final class GCodeParser {
         r.limitsFromMachine = lim.fromMachine;
         r.cappedRate = Math.min(lim.maxRate[0], lim.maxRate[1]);
         return r;
+    }
+
+    private static final Pattern PART = Pattern.compile("\\bPart\\s+(\\d+)\\s*/\\s*\\d+", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Label point of each part: the centre of the feed moves under its "(Part n/N)" comments. Each section has its
+     * own order (the profiles are not cut in the order of the holes), so a part is its section plus its number.
+     */
+    private static void parts(Result r, int[] at, int[] num) {
+        if (at.length == 0) return;
+        int[] sec = new int[at.length];
+        for (int i = 1; i < at.length; i++) sec[i] = sec[i - 1] + (num[i] <= num[i - 1] ? 1 : 0);
+        java.util.TreeMap<Long, float[]> box = new java.util.TreeMap<>();   // section, n → minX, minY, maxX, maxY, first, last
+        int k = -1;
+        for (int i = 0; i < r.feedCount; i++) {
+            int line = r.feedLine[i];
+            while (k + 1 < at.length && at[k + 1] <= line) k++;
+            if (k < 0) continue;
+            long key = (long) sec[k] << 32 | num[k];
+            float[] b = box.get(key);
+            if (b == null) box.put(key, b = new float[]{Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE, line, line});
+            for (int e = 0; e < 4; e += 2) {
+                float x = r.feedPts[i * 4 + e], y = r.feedPts[i * 4 + e + 1];
+                b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y);
+                b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y);
+            }
+            b[5] = line;
+        }
+        int n = box.size(), j = 0;
+        r.partNo = new int[n];
+        r.partSection = new int[n];
+        r.partXY = new float[n * 2];
+        r.partFirstLine = new int[n];
+        r.partLastLine = new int[n];
+        for (java.util.Map.Entry<Long, float[]> e : box.entrySet()) {
+            float[] b = e.getValue();
+            r.partNo[j] = (int) (long) e.getKey();
+            r.partSection[j] = (int) (e.getKey() >> 32);
+            r.partXY[j * 2] = (b[0] + b[2]) / 2;
+            r.partXY[j * 2 + 1] = (b[1] + b[3]) / 2;
+            r.partFirstLine[j] = (int) b[4];
+            r.partLastLine[j] = (int) b[5];
+            j++;
+        }
     }
 
     /** Fills the draw* arrays: segments whose quantised (0.01 mm) endpoints were already seen are skipped. */

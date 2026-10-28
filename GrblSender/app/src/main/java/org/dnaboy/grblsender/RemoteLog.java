@@ -224,6 +224,17 @@ public final class RemoteLog {
         readResponse(c);
     }
 
+    /** Delete an NC file from the backoffice's gcode folder with the ingest key (call off the UI thread). */
+    static void deleteGcode(String name) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(server + "/api/gcode/"
+                + java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20")).openConnection();
+        c.setConnectTimeout(5000);
+        c.setReadTimeout(10000);
+        c.setRequestMethod("DELETE");
+        c.setRequestProperty("X-Ingest-Key", BuildConfig.INGEST_KEY);
+        readResponse(c);
+    }
+
     /** GET {@code path} on the backoffice server (call off the UI thread). */
     static String get(String path) throws Exception { return getAbs(server + path); }
 

@@ -121,6 +121,7 @@
 
                         <Button android:id="@+id/btnNew" style="@style/Tb" android:text="New" />
                         <Button android:id="@+id/btnOpen" style="@style/Tb" android:text="Open" />
+                        <Button android:id="@+id/btnEdit" style="@style/Tb" android:text="Edit" />
                         <Button android:id="@+id/btnSave" style="@style/Tb" android:text="Save" />
                         <Button android:id="@+id/btnSaveAs" style="@style/Tb" android:text="Save As" />
                         <Button android:id="@+id/btnClose" style="@style/Tb" android:text="Close" />
